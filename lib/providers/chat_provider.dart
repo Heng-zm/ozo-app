@@ -13,6 +13,7 @@ import '../core/constants.dart';
 import '../core/crypto/crypto_service.dart';
 import '../core/database/app_database.dart';
 import '../core/database/models.dart';
+import '../core/dsa/bloom_filter.dart';
 import '../core/network/discovery_service.dart';
 import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
@@ -25,6 +26,11 @@ class ChatProvider extends ChangeNotifier {
   final AppDatabase database = AppDatabase();
   final SecurityService security = SecurityService();
   final _uuid = const Uuid();
+
+  // High-performance Bloom Filter for packet/message deduplication
+  final BloomFilter _incomingPacketBloomFilter = BloomFilter(capacity: 25000, falsePositiveRate: 0.005);
+  final Set<String> _seenMessageIds = {};
+  BloomFilter get incomingPacketBloomFilter => _incomingPacketBloomFilter;
 
   late DiscoveryService discoveryService;
   late P2pServer server;
@@ -130,14 +136,20 @@ class ChatProvider extends ChangeNotifier {
   // Quick Search
   String _searchQuery = '';
   List<ChatMessage> _searchResults = [];
+  List<Peer> _searchPeerResults = [];
   String get searchQuery => _searchQuery;
   List<ChatMessage> get searchResults => _searchResults;
+  List<Peer> get searchPeerResults => _searchPeerResults;
 
   Future<void> setSearchQuery(String query) async {
     _searchQuery = query;
-    if (query.trim().isEmpty) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
       _searchResults = [];
+      _searchPeerResults = [];
     } else {
+      // Instant O(L) Prefix Trie peer lookup + SQLite FTS search
+      _searchPeerResults = database.searchPeers(trimmed);
       _searchResults = await database.searchMessages(query);
     }
     notifyListeners();
@@ -795,6 +807,18 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _handleIncomingMessage(ChatMessage message) {
+    // Fast O(1) deduplication check using Bloom filter & exact set
+    if (_incomingPacketBloomFilter.mightContain(message.id)) {
+      if (_seenMessageIds.contains(message.id)) {
+        return; // Duplicate packet dropped
+      }
+    }
+    _incomingPacketBloomFilter.add(message.id);
+    _seenMessageIds.add(message.id);
+    if (_seenMessageIds.length > 5000) {
+      _seenMessageIds.remove(_seenMessageIds.first);
+    }
+
     // If we have active chat open with the sender, mark as read immediately
     if (_activePeer?.id == message.senderId) {
       message.status = MessageStatus.read;
@@ -844,6 +868,18 @@ class ChatProvider extends ChangeNotifier {
   void _handleIncomingGroupMessage(ChatMessage msg, String groupId) {
     final group = database.getGroup(groupId);
     if (group == null) return;
+
+    // Fast O(1) deduplication check for group relays
+    if (_incomingPacketBloomFilter.mightContain(msg.id)) {
+      if (_seenMessageIds.contains(msg.id)) {
+        return; // Duplicate group relay dropped!
+      }
+    }
+    _incomingPacketBloomFilter.add(msg.id);
+    _seenMessageIds.add(msg.id);
+    if (_seenMessageIds.length > 5000) {
+      _seenMessageIds.remove(_seenMessageIds.first);
+    }
 
     database.saveMessage(msg);
     notifyListeners();

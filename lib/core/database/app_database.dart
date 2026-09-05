@@ -8,6 +8,9 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import '../dsa/bloom_filter.dart';
+import '../dsa/lru_cache.dart';
+import '../dsa/prefix_trie.dart';
 import 'models.dart';
 
 /// Persistent local storage backed by high-performance SQLite with WAL mode,
@@ -20,6 +23,11 @@ class AppDatabase {
   sqflite.Database? _db;
 
   final List<ChatMessage> _messages = [];
+  final Map<String, int> _messageIndexById = {};
+  final LruCache<String, ChatMessage> _messageLruCache = LruCache(capacity: 1000);
+  final BloomFilter _messageBloomFilter = BloomFilter(capacity: 25000, falsePositiveRate: 0.01);
+  final PrefixTrie<Peer> _peerTrie = PrefixTrie<Peer>();
+
   final Map<String, Peer> _knownPeers = {};
   final Map<String, String> _pinnedKeys = {}; // deviceId -> originalPublicKey
   final Map<String, GroupChat> _groups = {};
@@ -28,6 +36,9 @@ class AppDatabase {
   final List<LinkedDevice> _linkedDevices = [];
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
+  LruCache<String, ChatMessage> get messageCache => _messageLruCache;
+  BloomFilter get messageBloomFilter => _messageBloomFilter;
+  PrefixTrie<Peer> get peerTrie => _peerTrie;
   Map<String, Peer> get knownPeers => Map.unmodifiable(_knownPeers);
   Map<String, String> get pinnedKeys => Map.unmodifiable(_pinnedKeys);
   List<GroupChat> get groups => _groups.values.toList()
@@ -366,6 +377,7 @@ class AppDatabase {
     if (_db == null) return;
     final rows = await _db!.query('peers');
     _knownPeers.clear();
+    _peerTrie.clear();
     for (final row in rows) {
       final peer = Peer(
         id: row['id'] as String,
@@ -387,6 +399,10 @@ class AppDatabase {
         peer.hasIdentityConflict = true;
       }
       _knownPeers[peer.id] = peer;
+      _peerTrie.insert(peer.name, peer);
+      if (peer.username != null && peer.username!.isNotEmpty) {
+        _peerTrie.insert(peer.username!, peer);
+      }
     }
   }
 
@@ -401,6 +417,11 @@ class AppDatabase {
     }
 
     _knownPeers[peer.id] = peer;
+    _peerTrie.insert(peer.name, peer);
+    if (peer.username != null && peer.username!.isNotEmpty) {
+      _peerTrie.insert(peer.username!, peer);
+    }
+
     if (_db != null) {
       await _db!.insert(
         'peers',
@@ -420,6 +441,11 @@ class AppDatabase {
         conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
       );
     }
+  }
+
+  /// O(L) fast prefix search over known peers using in-memory Prefix Trie.
+  List<Peer> searchPeers(String prefix, {int limit = 20}) {
+    return _peerTrie.searchPrefix(prefix, limit: limit);
   }
 
   Future<void> upsertPeer(Peer peer) => savePeer(peer);
@@ -521,8 +547,15 @@ class AppDatabase {
     if (_db == null) return;
     final rows = await _db!.query('messages', orderBy: 'timestamp ASC');
     _messages.clear();
+    _messageIndexById.clear();
+    _messageLruCache.clear();
+    _messageBloomFilter.reset();
     for (final row in rows) {
-      _messages.add(_rowToChatMessage(row));
+      final msg = _rowToChatMessage(row);
+      _messageIndexById[msg.id] = _messages.length;
+      _messages.add(msg);
+      _messageLruCache.put(msg.id, msg);
+      _messageBloomFilter.add(msg.id);
     }
   }
 
@@ -612,10 +645,14 @@ class AppDatabase {
   }
 
   Future<void> saveMessage(ChatMessage message) async {
-    final index = _messages.indexWhere((m) => m.id == message.id);
-    if (index >= 0) {
-      _messages[index] = message;
+    _messageBloomFilter.add(message.id);
+    _messageLruCache.put(message.id, message);
+
+    final idx = _messageIndexById[message.id];
+    if (idx != null && idx < _messages.length && _messages[idx].id == message.id) {
+      _messages[idx] = message;
     } else {
+      _messageIndexById[message.id] = _messages.length;
       _messages.add(message);
     }
 
@@ -631,10 +668,30 @@ class AppDatabase {
     }
   }
 
+  /// O(1) retrieval leveraging LRU Cache and Bloom Filter fast negative check.
+  ChatMessage? getMessageById(String id) {
+    final cached = _messageLruCache.get(id);
+    if (cached != null) return cached;
+
+    if (!_messageBloomFilter.mightContain(id)) {
+      return null;
+    }
+
+    final idx = _messageIndexById[id];
+    if (idx != null && idx < _messages.length && _messages[idx].id == id) {
+      final msg = _messages[idx];
+      _messageLruCache.put(id, msg);
+      return msg;
+    }
+    return null;
+  }
+
   Future<void> updateMessageStatus(String messageId, MessageStatus status) async {
-    final index = _messages.indexWhere((m) => m.id == messageId);
-    if (index >= 0) {
-      _messages[index] = _messages[index].copyWith(status: status);
+    final idx = _messageIndexById[messageId];
+    if (idx != null && idx < _messages.length && _messages[idx].id == messageId) {
+      final updated = _messages[idx].copyWith(status: status);
+      _messages[idx] = updated;
+      _messageLruCache.put(messageId, updated);
     }
 
     if (_db != null) {
@@ -660,7 +717,15 @@ class AppDatabase {
   }
 
   Future<void> deleteMessage(String messageId) async {
+    _messageLruCache.remove(messageId);
+    _messageIndexById.remove(messageId);
     _messages.removeWhere((m) => m.id == messageId);
+    // Re-index remaining messages
+    _messageIndexById.clear();
+    for (int i = 0; i < _messages.length; i++) {
+      _messageIndexById[_messages[i].id] = i;
+    }
+
     if (_db != null) {
       await _db!.delete('messages', where: 'id = ?', whereArgs: [messageId]);
       try {

@@ -277,8 +277,10 @@ class HomeScreen extends StatelessWidget {
 
   Widget _buildSearchResults(BuildContext context, ChatProvider provider, bool isDark) {
     final query = provider.searchQuery.toLowerCase();
-    final matchingPeers = provider.database.knownPeers.values.where((p) =>
-        p.name.toLowerCase().contains(query) || (p.username ?? '').toLowerCase().contains(query)).toList();
+    final matchingPeers = provider.searchPeerResults.isNotEmpty
+        ? provider.searchPeerResults
+        : provider.database.knownPeers.values.where((p) =>
+            p.name.toLowerCase().contains(query) || (p.username ?? '').toLowerCase().contains(query)).toList();
     final matchingGroups = provider.database.groups.where((g) =>
         g.name.toLowerCase().contains(query)).toList();
     final messageResults = provider.searchResults;
