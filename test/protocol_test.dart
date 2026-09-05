@@ -58,4 +58,67 @@ void main() {
     expect(restored.fileMetadata?.fileName, equals('dataset.zip'));
     expect(restored.fileMetadata?.isCompleted, isTrue);
   });
+
+  test('ChatMessage with Voice Note serialization and properties', () {
+    final voiceMsg = ChatMessage(
+      id: 'voice-001',
+      chatId: 'peer-uuid-1234',
+      senderId: 'my-device-id',
+      senderName: 'My Phone',
+      recipientId: 'peer-uuid-1234',
+      content: 'Voice message (4.2s)',
+      type: MessageType.voice,
+      timestamp: DateTime.now(),
+      status: MessageStatus.sent,
+      voiceDurationSeconds: 4.2,
+      waveformAmplitudes: [0.1, 0.4, 0.8, 0.9, 0.5, 0.2],
+    );
+
+    expect(voiceMsg.isVoice, isTrue);
+    expect(voiceMsg.isImage, isFalse);
+
+    final json = voiceMsg.toJson();
+    expect(json['type'], equals('voice'));
+    expect(json['voiceDurationSeconds'], equals(4.2));
+    expect(json['waveformAmplitudes'], equals([0.1, 0.4, 0.8, 0.9, 0.5, 0.2]));
+
+    final restored = ChatMessage.fromJson(json);
+    expect(restored.isVoice, isTrue);
+    expect(restored.voiceDurationSeconds, equals(4.2));
+    expect(restored.waveformAmplitudes?.length, equals(6));
+  });
+
+  test('ChatMessage with Inline Image detection', () {
+    final imageMsg = ChatMessage(
+      id: 'img-001',
+      chatId: 'peer-uuid-1234',
+      senderId: 'my-device-id',
+      senderName: 'My PC',
+      recipientId: 'peer-uuid-1234',
+      content: 'Sent photo.png',
+      type: MessageType.image,
+      timestamp: DateTime.now(),
+      status: MessageStatus.read,
+      fileMetadata: FileMetadata(
+        transferId: 'tx-img-1',
+        fileName: 'vacation_photo.PNG',
+        fileSize: 204800,
+        sha256: 'mock-sha',
+        localPath: '/downloads/vacation_photo.PNG',
+        isCompleted: true,
+      ),
+    );
+
+    expect(imageMsg.isImage, isTrue);
+    expect(imageMsg.isVoice, isFalse);
+    expect(imageMsg.status, equals(MessageStatus.read));
+
+    final json = imageMsg.toJson();
+    expect(json['type'], equals('image'));
+    expect(json['status'], equals('read'));
+
+    final restored = ChatMessage.fromJson(json);
+    expect(restored.isImage, isTrue);
+    expect(restored.status, equals(MessageStatus.read));
+  });
 }

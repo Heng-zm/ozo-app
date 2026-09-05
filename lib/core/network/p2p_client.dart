@@ -16,6 +16,10 @@ class P2pClient {
   // Pending connection futures to avoid race conditions
   final Map<String, Future<WebSocket?>> _connectingFutures = {};
 
+  // Callbacks for duplex reception on client socket
+  void Function(String messageId, MessageStatus status)? onDeliveryReceipt;
+  void Function(String peerId, bool isTyping)? onTyping;
+
   P2pClient({
     required this.deviceId,
     required this.deviceName,
@@ -53,10 +57,27 @@ class P2pClient {
 
       _sockets[peer.id] = socket;
 
-      // Handle events on this client socket
+      // Handle events on this client socket (duplex)
       socket.listen(
         (data) {
-          // Can handle incoming ACKs or data on this socket if peer uses it duplex
+          try {
+            final text = data is String ? data : utf8.decode(data as List<int>);
+            final msg = jsonDecode(text) as Map<String, dynamic>;
+            final type = msg['type'] as String?;
+            if (type == 'ACK') {
+              final messageId = msg['messageId'] as String;
+              final status = msg['status'] == 'read'
+                  ? MessageStatus.read
+                  : MessageStatus.delivered;
+              onDeliveryReceipt?.call(messageId, status);
+            } else if (type == 'TYPING') {
+              final senderId = msg['senderId'] as String?;
+              final isTyping = msg['isTyping'] as bool? ?? false;
+              if (senderId != null) {
+                onTyping?.call(senderId, isTyping);
+              }
+            }
+          } catch (_) {}
         },
         onDone: () {
           _sockets.remove(peer.id);
@@ -95,6 +116,10 @@ class P2pClient {
       'senderPubKey': cryptoService.publicKeyBase64,
       'ts': message.timestamp.millisecondsSinceEpoch,
       'payload': encrypted,
+      'msgType': message.type.name,
+      'fileMetadata': message.fileMetadata?.toJson(),
+      'voiceDuration': message.voiceDurationSeconds,
+      'amplitudes': message.waveformAmplitudes,
     });
 
     try {
@@ -104,6 +129,20 @@ class P2pClient {
       _sockets.remove(peer.id);
       return false;
     }
+  }
+
+  /// Sends a read receipt to a peer for a message
+  Future<void> sendReadReceipt(Peer peer, String messageId) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return;
+    try {
+      socket.add(jsonEncode({
+        'type': 'ACK',
+        'messageId': messageId,
+        'status': 'read',
+        'senderId': deviceId,
+      }));
+    } catch (_) {}
   }
 
   /// Sends a file transfer offer to a peer

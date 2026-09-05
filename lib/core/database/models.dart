@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import '../constants.dart';
 
-enum MessageType { text, file }
+enum MessageType { text, file, image, voice }
 enum MessageStatus { pending, sent, delivered, read, failed }
 enum TransferDirection { upload, download }
 enum TransferStatus { offered, transferring, paused, completed, failed }
@@ -178,6 +178,8 @@ class ChatMessage {
   final FileMetadata? fileMetadata;
   final bool isGroup;
   final String? groupId;
+  final double? voiceDurationSeconds;
+  final List<double>? waveformAmplitudes;
 
   ChatMessage({
     required this.id,
@@ -192,7 +194,25 @@ class ChatMessage {
     this.fileMetadata,
     this.isGroup = false,
     this.groupId,
+    this.voiceDurationSeconds,
+    this.waveformAmplitudes,
   });
+
+  bool get isImage {
+    if (type == MessageType.image) return true;
+    if (type == MessageType.file && fileMetadata != null) {
+      final ext = fileMetadata!.fileName.toLowerCase();
+      return ext.endsWith('.jpg') ||
+          ext.endsWith('.jpeg') ||
+          ext.endsWith('.png') ||
+          ext.endsWith('.gif') ||
+          ext.endsWith('.webp') ||
+          ext.endsWith('.bmp');
+    }
+    return false;
+  }
+
+  bool get isVoice => type == MessageType.voice;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -207,6 +227,8 @@ class ChatMessage {
         'fileMetadata': fileMetadata?.toJson(),
         'isGroup': isGroup,
         'groupId': groupId,
+        'voiceDurationSeconds': voiceDurationSeconds,
+        'waveformAmplitudes': waveformAmplitudes,
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -216,7 +238,10 @@ class ChatMessage {
         senderName: json['senderName'] as String? ?? 'Unknown',
         recipientId: json['recipientId'] as String,
         content: json['content'] as String? ?? '',
-        type: json['type'] == 'file' ? MessageType.file : MessageType.text,
+        type: MessageType.values.firstWhere(
+          (e) => e.name == json['type'],
+          orElse: () => MessageType.text,
+        ),
         timestamp: json['timestamp'] != null
             ? DateTime.parse(json['timestamp'] as String)
             : DateTime.now(),
@@ -230,7 +255,45 @@ class ChatMessage {
             : null,
         isGroup: json['isGroup'] as bool? ?? false,
         groupId: json['groupId'] as String?,
+        voiceDurationSeconds: (json['voiceDurationSeconds'] as num?)?.toDouble(),
+        waveformAmplitudes: (json['waveformAmplitudes'] as List<dynamic>?)
+            ?.map((e) => (e as num).toDouble())
+            .toList(),
       );
+
+  ChatMessage copyWith({
+    String? id,
+    String? chatId,
+    String? senderId,
+    String? senderName,
+    String? recipientId,
+    String? content,
+    MessageType? type,
+    DateTime? timestamp,
+    MessageStatus? status,
+    FileMetadata? fileMetadata,
+    bool? isGroup,
+    String? groupId,
+    double? voiceDurationSeconds,
+    List<double>? waveformAmplitudes,
+  }) {
+    return ChatMessage(
+      id: id ?? this.id,
+      chatId: chatId ?? this.chatId,
+      senderId: senderId ?? this.senderId,
+      senderName: senderName ?? this.senderName,
+      recipientId: recipientId ?? this.recipientId,
+      content: content ?? this.content,
+      type: type ?? this.type,
+      timestamp: timestamp ?? this.timestamp,
+      status: status ?? this.status,
+      fileMetadata: fileMetadata ?? this.fileMetadata,
+      isGroup: isGroup ?? this.isGroup,
+      groupId: groupId ?? this.groupId,
+      voiceDurationSeconds: voiceDurationSeconds ?? this.voiceDurationSeconds,
+      waveformAmplitudes: waveformAmplitudes ?? this.waveformAmplitudes,
+    );
+  }
 }
 
 /// Represents an active or completed file transfer

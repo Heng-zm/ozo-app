@@ -273,6 +273,19 @@ class P2pServer {
       plaintext = '[Decryption failed: unauthenticated message]';
     }
 
+    final msgTypeStr = msg['msgType'] as String?;
+    final msgType = MessageType.values.firstWhere(
+      (e) => e.name == msgTypeStr,
+      orElse: () => MessageType.text,
+    );
+    final voiceDuration = (msg['voiceDuration'] as num?)?.toDouble();
+    final amplitudes = (msg['amplitudes'] as List<dynamic>?)
+        ?.map((e) => (e as num).toDouble())
+        .toList();
+    final fileMeta = msg['fileMetadata'] != null
+        ? FileMetadata.fromJson(msg['fileMetadata'] as Map<String, dynamic>)
+        : null;
+
     final chatMsg = ChatMessage(
       id: messageId,
       chatId: senderId, // 1-on-1 chat
@@ -280,9 +293,12 @@ class P2pServer {
       senderName: senderName,
       recipientId: deviceId,
       content: plaintext,
-      type: MessageType.text,
+      type: msgType,
       timestamp: timestamp,
       status: MessageStatus.delivered,
+      fileMetadata: fileMeta,
+      voiceDurationSeconds: voiceDuration,
+      waveformAmplitudes: amplitudes,
     );
 
     onMessageReceived?.call(chatMsg);
@@ -360,6 +376,31 @@ class P2pServer {
       onGroupMessage?.call(chatMsg, groupId);
     } catch (e) {
       if (kDebugMode) print('Failed to parse group message: $e');
+    }
+  }
+
+  /// Sends a read receipt for a message over active server socket
+  void sendReadReceipt(String peerId, String messageId) {
+    final socket = _activeSockets[peerId];
+    if (socket != null && socket.readyState == WebSocket.open) {
+      socket.add(jsonEncode({
+        'type': 'ACK',
+        'messageId': messageId,
+        'status': 'read',
+        'senderId': deviceId,
+      }));
+    }
+  }
+
+  /// Sends typing indicator to peer over active server socket
+  void sendTypingIndicator(String peerId, bool isTyping) {
+    final socket = _activeSockets[peerId];
+    if (socket != null && socket.readyState == WebSocket.open) {
+      socket.add(jsonEncode({
+        'type': 'TYPING',
+        'senderId': deviceId,
+        'isTyping': isTyping,
+      }));
     }
   }
 

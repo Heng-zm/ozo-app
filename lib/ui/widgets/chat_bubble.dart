@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -5,6 +6,8 @@ import 'package:provider/provider.dart';
 import '../../core/database/models.dart';
 import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
+import 'media_gallery_viewer.dart';
+import 'voice_note_player.dart';
 
 class ChatBubble extends StatelessWidget {
   final ChatMessage message;
@@ -70,7 +73,11 @@ class ChatBubble extends StatelessWidget {
                     ),
                   ),
                 ),
-              if (message.type == MessageType.file && message.fileMetadata != null)
+              if (message.isVoice)
+                VoiceNotePlayer(message: message, isMe: isOutgoing)
+              else if (message.isImage && message.fileMetadata != null)
+                _buildImageAttachmentCard(context, message.fileMetadata!)
+              else if (message.type == MessageType.file && message.fileMetadata != null)
                 _buildFileAttachmentCard(context, message.fileMetadata!)
               else
                 Text(
@@ -219,6 +226,137 @@ class ChatBubble extends StatelessWidget {
     );
   }
 
+  Widget _buildImageAttachmentCard(BuildContext context, FileMetadata meta) {
+    final chatProvider = context.watch<ChatProvider>();
+    final activeTransfer = chatProvider.transferManager.getTransfer(meta.transferId);
+
+    final isDownloading = activeTransfer != null &&
+        activeTransfer.status == TransferStatus.transferring;
+    final isCompleted = meta.isCompleted ||
+        (activeTransfer != null && activeTransfer.status == TransferStatus.completed);
+
+    final hasLocalFile = meta.localPath != null && File(meta.localPath!).existsSync();
+
+    if (hasLocalFile && isCompleted) {
+      final file = File(meta.localPath!);
+      return GestureDetector(
+        onTap: () => MediaGalleryViewer.show(
+          context,
+          imageFile: file,
+          fileName: meta.fileName,
+          subtitle: _formatBytes(meta.fileSize),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(
+              maxHeight: 260,
+              minWidth: 160,
+            ),
+            child: Stack(
+              alignment: Alignment.bottomRight,
+              children: [
+                Image.file(
+                  file,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  errorBuilder: (context, error, stackTrace) =>
+                      _buildFileAttachmentCard(context, meta),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  margin: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(140),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.photo_rounded, size: 12, color: Colors.white),
+                      const SizedBox(width: 4),
+                      Text(
+                        _formatBytes(meta.fileSize),
+                        style: const TextStyle(fontSize: 10, color: Colors.white),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // If not yet downloaded, show thumbnail placeholder with download button
+    return Container(
+      constraints: const BoxConstraints(minWidth: 200, maxWidth: 260),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.black.withAlpha(20),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: TelegramTheme.primaryBlue.withAlpha(40),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.image_rounded,
+                  color: TelegramTheme.primaryBlue,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      meta.fileName,
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      _formatBytes(meta.fileSize),
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+              if (!isOutgoing)
+                IconButton(
+                  icon: Icon(
+                    isDownloading ? Icons.hourglass_top_rounded : Icons.download_rounded,
+                    color: TelegramTheme.primaryBlue,
+                    size: 26,
+                  ),
+                  onPressed: () => chatProvider.acceptIncomingFile(message),
+                ),
+            ],
+          ),
+          if (activeTransfer != null && isDownloading) ...[
+            const SizedBox(height: 6),
+            LinearProgressIndicator(
+              value: activeTransfer.progress,
+              backgroundColor: Colors.grey.withAlpha(50),
+              valueColor: const AlwaysStoppedAnimation(TelegramTheme.primaryBlue),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildStatusIcon(MessageStatus status) {
     switch (status) {
       case MessageStatus.pending:
@@ -226,6 +364,7 @@ class ChatBubble extends StatelessWidget {
       case MessageStatus.sent:
         return const Icon(Icons.check, size: 14, color: Colors.grey);
       case MessageStatus.delivered:
+        return const Icon(Icons.done_all, size: 14, color: Colors.grey);
       case MessageStatus.read:
         return const Icon(Icons.done_all, size: 14, color: TelegramTheme.checkmarkBlue);
       case MessageStatus.failed:

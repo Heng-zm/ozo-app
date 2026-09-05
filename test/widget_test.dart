@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lan_telegram/core/database/models.dart';
+import 'package:lan_telegram/providers/chat_provider.dart';
 import 'package:lan_telegram/ui/theme/app_theme.dart';
 import 'package:lan_telegram/ui/widgets/chat_bubble.dart';
 import 'package:lan_telegram/ui/widgets/peer_list_tile.dart';
+import 'package:lan_telegram/ui/widgets/voice_note_player.dart';
+import 'package:provider/provider.dart';
 
 void main() {
   testWidgets('PeerListTile renders peer info and online indicator', (WidgetTester tester) async {
@@ -61,5 +64,39 @@ void main() {
 
     expect(find.text('Hello over LAN P2P!'), findsOneWidget);
     expect(find.text('14:30'), findsOneWidget);
+  });
+
+  testWidgets('VoiceNotePlayer renders play/download button and duration', (WidgetTester tester) async {
+    final voiceMsg = ChatMessage(
+      id: 'voice-1',
+      chatId: 'chat-1',
+      senderId: 'alice',
+      senderName: 'Alice',
+      recipientId: 'bob',
+      content: 'Voice note',
+      type: MessageType.voice,
+      timestamp: DateTime(2026, 9, 5, 14, 35),
+      voiceDurationSeconds: 12.5,
+      waveformAmplitudes: [0.2, 0.5, 0.9, 0.4],
+      status: MessageStatus.delivered,
+    );
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<ChatProvider>(
+        create: (_) => ChatProvider(),
+        child: MaterialApp(
+          theme: TelegramTheme.lightTheme,
+          home: Scaffold(
+            body: VoiceNotePlayer(
+              message: voiceMsg,
+              isMe: true,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.download_rounded), findsOneWidget);
+    expect(find.text('0:12'), findsOneWidget);
   });
 }

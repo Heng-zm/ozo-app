@@ -56,6 +56,7 @@ class _ActiveChatViewState extends State<ActiveChatView> {
       _isComposing = false;
     });
 
+    provider.sendTypingIndicator(false);
     provider.sendTextMessage(text);
     _scrollToBottom();
   }
@@ -264,6 +265,80 @@ class _ActiveChatViewState extends State<ActiveChatView> {
   ) {
     final isReadOnly = isGroup && !isOnline;
 
+    if (provider.isRecordingVoice) {
+      final minutes = provider.recordedDuration.inMinutes;
+      final seconds = provider.recordedDuration.inSeconds % 60;
+      final timeStr = '$minutes:${seconds.toString().padLeft(2, '0')}';
+
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        color: isDark ? TelegramTheme.darkSidebar : Colors.white,
+        child: SafeArea(
+          child: Row(
+            children: [
+              // Red recording pulse
+              Container(
+                width: 12,
+                height: 12,
+                decoration: const BoxDecoration(
+                  color: Colors.red,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                timeStr,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Colors.red,
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Live amplitude visualization dots
+              Expanded(
+                child: SizedBox(
+                  height: 20,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: provider.liveAmplitudes.take(18).map((amp) {
+                      return Container(
+                        width: 3,
+                        height: (amp * 20).clamp(4.0, 20.0),
+                        decoration: BoxDecoration(
+                          color: TelegramTheme.primaryBlue.withAlpha(180),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ),
+              // Cancel button
+              IconButton(
+                icon: const Icon(Icons.delete_outline_rounded, color: Colors.grey),
+                tooltip: 'Cancel recording',
+                onPressed: () => provider.cancelVoiceRecording(),
+              ),
+              const SizedBox(width: 4),
+              // Stop & Send button
+              Container(
+                decoration: const BoxDecoration(
+                  color: TelegramTheme.primaryBlue,
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                  tooltip: 'Send Voice Note',
+                  onPressed: () => provider.stopAndSendVoiceRecording(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       color: isDark ? TelegramTheme.darkSidebar : Colors.white,
@@ -318,10 +393,20 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 color: isReadOnly ? Colors.grey : TelegramTheme.primaryBlue,
                 shape: BoxShape.circle,
               ),
-              child: IconButton(
-                icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                onPressed: _isComposing && !isReadOnly ? () => _handleSubmitted(provider) : null,
-              ),
+              child: _isComposing || isGroup
+                  ? IconButton(
+                      icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                      onPressed: _isComposing && !isReadOnly
+                          ? () => _handleSubmitted(provider)
+                          : null,
+                    )
+                  : IconButton(
+                      icon: const Icon(Icons.mic_rounded, color: Colors.white, size: 20),
+                      tooltip: 'Record Voice Note',
+                      onPressed: !isReadOnly
+                          ? () => provider.startVoiceRecording()
+                          : null,
+                    ),
             ),
           ],
         ),

@@ -68,6 +68,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>LAN Telegram requires access to the local network to discover peers, exchange encrypted messages, and transfer files without internet access.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>LAN Telegram requires microphone access to record and send encrypted voice notes.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_lan-tg._tcp</string>
