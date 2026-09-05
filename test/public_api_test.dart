@@ -54,6 +54,7 @@ void main() {
       expect(resInfo.headers.contentType?.mimeType, equals('application/json'));
       final infoJson = jsonDecode(await utf8.decodeStream(resInfo)) as Map<String, dynamic>;
       expect(infoJson['app'], equals('OZO'));
+      expect(infoJson['version'], equals('1.1.0'));
       expect(infoJson['name'], equals('Alice Public Node'));
       expect(infoJson['status'], equals('online'));
       expect(infoJson['safetyFingerprint'], equals(server.safetyFingerprint));

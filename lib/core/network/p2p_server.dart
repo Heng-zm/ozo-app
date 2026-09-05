@@ -143,7 +143,7 @@ class P2pServer {
       request.response.headers.contentType = ContentType.json;
       request.response.write(jsonEncode({
         'app': 'OZO',
-        'version': '1.0.0',
+        'version': '1.1.0',
         'protocol': AppConstants.protocolVersion,
         'id': deviceId,
         'name': deviceName,
