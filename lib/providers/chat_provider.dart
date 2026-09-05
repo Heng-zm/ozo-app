@@ -276,12 +276,12 @@ class ChatProvider extends ChangeNotifier {
   Future<void> pickAndSendFile() async {
     if (_activePeer == null) return;
 
-    final result = await FilePicker.platform.pickFiles();
-    if (result == null || result.files.single.path == null) return;
+    final pickedFile = await FilePicker.pickFile();
+    if (pickedFile == null || pickedFile.path == null) return;
 
-    final file = File(result.files.single.path!);
+    final file = File(pickedFile.path!);
     final messageId = _uuid.v4();
-    final fileName = result.files.single.name;
+    final fileName = pickedFile.name;
     final fileSize = await file.length();
 
     final chatMessage = ChatMessage(
