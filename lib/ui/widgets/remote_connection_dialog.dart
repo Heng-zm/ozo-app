@@ -168,41 +168,107 @@ class _RemoteConnectionDialogState extends State<RemoteConnectionDialog>
                             color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Row(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  linkString,
-                                  style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              ElevatedButton.icon(
-                                onPressed: () {
-                                  Clipboard.setData(ClipboardData(text: linkString));
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Connection link copied to clipboard!'),
-                                      duration: Duration(seconds: 2),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      linkString,
+                                      style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                  );
-                                },
-                                icon: const Icon(Icons.copy_rounded, size: 16),
-                                label: const Text('Copy'),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  ElevatedButton.icon(
+                                    onPressed: () {
+                                      Clipboard.setData(ClipboardData(text: linkString));
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('App connection link copied to clipboard!'),
+                                          duration: Duration(seconds: 2),
+                                        ),
+                                      );
+                                    },
+                                    icon: const Icon(Icons.copy_rounded, size: 16),
+                                    label: const Text('App Link'),
+                                  ),
+                                ],
                               ),
+                              if (hasTunnel) ...[
+                                const Divider(height: 16),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            'https://$tunnelHost/',
+                                            style: theme.textTheme.bodySmall?.copyWith(
+                                              fontWeight: FontWeight.bold,
+                                              color: theme.colorScheme.primary,
+                                            ),
+                                          ),
+                                          Text(
+                                            'Public Web Connect Page & REST API',
+                                            style: theme.textTheme.labelSmall?.copyWith(color: Colors.grey),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    OutlinedButton.icon(
+                                      onPressed: () {
+                                        Clipboard.setData(ClipboardData(text: 'https://$tunnelHost/'));
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(
+                                            content: Text('Public Web / API link copied!'),
+                                            duration: Duration(seconds: 2),
+                                          ),
+                                        );
+                                      },
+                                      icon: const Icon(Icons.public_rounded, size: 16),
+                                      label: const Text('Web Link'),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ],
                           ),
                         ),
                         const SizedBox(height: 12),
-                        Text(
-                          'Tip: Run "cloudflared tunnel --url http://127.0.0.1:${provider.serverPort}" to get a free public HTTPS tunnel.',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                            fontStyle: FontStyle.italic,
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.2)),
                           ),
-                          textAlign: TextAlign.center,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.api_rounded, size: 16, color: theme.colorScheme.primary),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Public User Connect API is Active',
+                                    style: theme.textTheme.labelMedium?.copyWith(
+                                      fontWeight: FontWeight.bold,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Anyone opening your link in a web browser can view your node, test GET /api/info, and connect directly. Run "cloudflared tunnel --url http://127.0.0.1:${provider.serverPort}" to get a public HTTPS address.',
+                                style: theme.textTheme.bodySmall?.copyWith(fontSize: 11, color: Colors.grey.shade600),
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),

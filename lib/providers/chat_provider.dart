@@ -266,6 +266,10 @@ class ChatProvider extends ChangeNotifier {
     server.onBackupReceived = _handleBackupReceived;
     server.onMessagePinned = _handleMessagePinned;
     server.onMessageUnpinned = _handleMessageUnpinned;
+    server.onPeerAnnouncedViaApi = (peer) async {
+      await database.upsertPeer(peer);
+      notifyListeners();
+    };
 
     // Hook client duplex callbacks
     client.onDeliveryReceipt = _handleDeliveryReceipt;

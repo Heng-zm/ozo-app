@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import '../constants.dart';
 import '../crypto/crypto_service.dart';
@@ -25,6 +26,7 @@ class P2pServer {
 
   HttpServer? _server;
   int _actualPort = 0;
+  DateTime? _startedAt;
 
   // Active WebSocket connections: peerId -> WebSocket
   final Map<String, WebSocket> _activeSockets = {};
@@ -47,8 +49,18 @@ class P2pServer {
   void Function(Map<String, dynamic> backupData)? onBackupReceived;
   void Function(String chatId, String messageId)? onMessagePinned;
   void Function(String chatId)? onMessageUnpinned;
+  void Function(Peer peer)? onPeerAnnouncedViaApi;
 
   int get port => _actualPort;
+
+  DateTime? get startedAt => _startedAt;
+
+  String get safetyFingerprint {
+    final pk = cryptoService.publicKeyBase64 ?? '';
+    if (pk.isEmpty) return '0000-0000';
+    final digest = crypto.sha256.convert(utf8.encode(pk)).toString().toUpperCase();
+    return '${digest.substring(0, 4)}-${digest.substring(4, 8)}';
+  }
 
   P2pServer({
     required this.requestedPort,
@@ -75,6 +87,7 @@ class P2pServer {
     }
 
     _actualPort = _server!.port;
+    _startedAt = DateTime.now();
     _server!.listen(_handleHttpRequest);
 
     return _actualPort;
@@ -102,6 +115,7 @@ class P2pServer {
 
     final path = request.uri.path;
 
+    // WebSocket upgrade for real-time E2EE communication
     if (path == '/ws') {
       if (WebSocketTransformer.isUpgradeRequest(request)) {
         final socket = await WebSocketTransformer.upgrade(request);
@@ -113,13 +127,156 @@ class P2pServer {
       return;
     }
 
+    // Web Connect Landing Page
+    if (path == '/' || path == '/connect') {
+      request.response.headers.contentType = ContentType.html;
+      request.response.write(_buildWebConnectHtml(request));
+      await request.response.close();
+      return;
+    }
+
+    // Node Information API
     if (path == '/api/info') {
+      final uptime = _startedAt != null
+          ? DateTime.now().difference(_startedAt!).inSeconds
+          : 0;
       request.response.headers.contentType = ContentType.json;
       request.response.write(jsonEncode({
+        'app': 'OZO',
+        'version': '1.0.0',
+        'protocol': AppConstants.protocolVersion,
         'id': deviceId,
         'name': deviceName,
         'pubKey': cryptoService.publicKeyBase64,
-        'proto': AppConstants.protocolVersion,
+        'safetyFingerprint': safetyFingerprint,
+        'status': 'online',
+        'port': _actualPort,
+        'uptimeSeconds': uptime,
+        'endpoints': {
+          'web': '/',
+          'ws': '/ws',
+          'info': '/api/info',
+          'connect': '/api/connect',
+          'health': '/api/health',
+          'download': '/api/file/download/:transferId',
+        }
+      }));
+      await request.response.close();
+      return;
+    }
+
+    // Public Connect API (GET connection parameters / POST register peer)
+    if (path == '/api/connect') {
+      if (request.method == 'GET') {
+        final hostHeader = request.headers.value('host') ?? '127.0.0.1';
+        final isHttps = request.headers.value('x-forwarded-proto') == 'https';
+        final hostOnly = hostHeader.split(':').first;
+        final port = isHttps
+            ? 443
+            : (int.tryParse(hostHeader.contains(':') ? hostHeader.split(':').last : '') ?? _actualPort);
+
+        final link = PeerConnectionLink(
+          id: deviceId,
+          name: deviceName,
+          host: hostOnly,
+          port: port,
+          publicKey: cryptoService.publicKeyBase64 ?? '',
+          platform: 'node',
+          isSecure: isHttps,
+        );
+
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({
+          'success': true,
+          'id': deviceId,
+          'name': deviceName,
+          'pubKey': cryptoService.publicKeyBase64,
+          'safetyFingerprint': safetyFingerprint,
+          'ozoUri': link.toUriString(),
+          'wsUrl': '${isHttps ? 'wss' : 'ws'}://$hostHeader/ws',
+          'host': hostOnly,
+          'port': port,
+          'isSecure': isHttps,
+        }));
+        await request.response.close();
+        return;
+      }
+
+      if (request.method == 'POST') {
+        try {
+          final body = await utf8.decodeStream(request);
+          final json = jsonDecode(body) as Map<String, dynamic>;
+          final peerId = json['id'] as String?;
+          final peerName = json['name'] as String? ?? 'Remote Web Peer';
+          final peerPubKey = json['pubKey'] as String? ?? '';
+          final peerPlatform = json['platform'] as String? ?? 'web';
+
+          if (peerId == null || peerId.isEmpty || peerPubKey.isEmpty) {
+            request.response.statusCode = HttpStatus.badRequest;
+            request.response.headers.contentType = ContentType.json;
+            request.response.write(jsonEncode({
+              'success': false,
+              'error': 'Missing required fields: id and pubKey',
+            }));
+            await request.response.close();
+            return;
+          }
+
+          final remoteIp = request.headers.value('cf-connecting-ip') ??
+              request.headers.value('x-forwarded-for')?.split(',').first.trim() ??
+              request.connectionInfo?.remoteAddress.address ??
+              '127.0.0.1';
+
+          final peer = Peer(
+            id: peerId,
+            name: peerName,
+            ip: remoteIp,
+            port: request.connectionInfo?.remotePort ?? 45455,
+            publicKey: peerPubKey,
+            platform: peerPlatform,
+            lastSeen: DateTime.now(),
+            isRemote: true,
+          );
+
+          onPeerAnnouncedViaApi?.call(peer);
+
+          final hostHeader = request.headers.value('host') ?? '127.0.0.1';
+          final isHttps = request.headers.value('x-forwarded-proto') == 'https';
+
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(jsonEncode({
+            'success': true,
+            'hostId': deviceId,
+            'hostName': deviceName,
+            'hostPubKey': cryptoService.publicKeyBase64,
+            'safetyFingerprint': safetyFingerprint,
+            'wsUrl': '${isHttps ? 'wss' : 'ws'}://$hostHeader/ws',
+            'message': 'Peer registered successfully. Connect to wsUrl for E2EE messaging.',
+          }));
+          await request.response.close();
+          return;
+        } catch (e) {
+          request.response.statusCode = HttpStatus.badRequest;
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(jsonEncode({'success': false, 'error': e.toString()}));
+          await request.response.close();
+          return;
+        }
+      }
+    }
+
+    // Health Check Endpoint
+    if (path == '/api/health') {
+      final uptime = _startedAt != null
+          ? DateTime.now().difference(_startedAt!).inSeconds
+          : 0;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'status': 'healthy',
+        'app': 'OZO',
+        'activeConnections': _activeSockets.length,
+        'uptimeSeconds': uptime,
+        'serverPort': _actualPort,
       }));
       await request.response.close();
       return;
@@ -484,5 +641,340 @@ class P2pServer {
     await _server?.close(force: true);
     _server = null;
     _actualPort = 0;
+  }
+
+  String _escapeHtml(String text) {
+    return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+  }
+
+  String _buildWebConnectHtml(HttpRequest request) {
+    final hostHeader = request.headers.value('host') ?? '127.0.0.1';
+    final isHttps = request.headers.value('x-forwarded-proto') == 'https';
+    final hostOnly = hostHeader.split(':').first;
+    final portNum = isHttps
+        ? 443
+        : (int.tryParse(hostHeader.contains(':') ? hostHeader.split(':').last : '') ?? _actualPort);
+
+    final link = PeerConnectionLink(
+      id: deviceId,
+      name: deviceName,
+      host: hostOnly,
+      port: portNum,
+      publicKey: cryptoService.publicKeyBase64 ?? '',
+      platform: 'node',
+      isSecure: isHttps,
+    );
+
+    final deepLink = link.toUriString();
+    final webUrl = '${isHttps ? 'https' : 'http'}://$hostHeader';
+    final wsUrl = '${isHttps ? 'wss' : 'ws'}://$hostHeader/ws';
+    final safeName = _escapeHtml(deviceName);
+    final safeId = _escapeHtml(deviceId);
+
+    return '''<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OZO P2P • Connect to $safeName</title>
+  <style>
+    :root {
+      --bg: #0e1621;
+      --card: #17212b;
+      --card-border: #242f3d;
+      --primary: #2481cc;
+      --primary-hover: #1e70b3;
+      --text: #ffffff;
+      --text-dim: #7f91a4;
+      --green: #4fae4e;
+      --accent: #64b5f6;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      margin: 0;
+      padding: 32px 16px;
+      font-family: var(--font);
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+    .container {
+      width: 100%;
+      max-width: 500px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    .header {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      background: rgba(79, 174, 78, 0.15);
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 4px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+    }
+    h1 {
+      margin: 8px 0 0 0;
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .sub {
+      color: var(--text-dim);
+      font-size: 13px;
+      margin: 0;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      font-size: 13px;
+    }
+    .info-row:last-child {
+      border-bottom: none;
+    }
+    .info-label {
+      color: var(--text-dim);
+    }
+    .info-val {
+      font-weight: 600;
+      font-family: monospace;
+      color: var(--text);
+    }
+    .fingerprint {
+      color: var(--accent);
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+    .qr-wrap {
+      display: flex;
+      justify-content: center;
+      margin: 16px 0;
+    }
+    .qr-img {
+      background: #ffffff;
+      padding: 12px;
+      border-radius: 14px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      text-decoration: none;
+      box-sizing: border-box;
+      border: none;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: #ffffff;
+    }
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+    .btn-secondary {
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+      border: 1px solid var(--card-border);
+      margin-top: 8px;
+    }
+    .btn-secondary:hover {
+      background: rgba(255,255,255,0.12);
+    }
+    .api-header {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .endpoint {
+      background: rgba(0,0,0,0.25);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-family: monospace;
+      font-size: 12px;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .method {
+      color: var(--accent);
+      font-weight: 700;
+      margin-right: 6px;
+    }
+    .test-btn {
+      background: rgba(36, 129, 204, 0.2);
+      color: var(--accent);
+      border: 1px solid rgba(36, 129, 204, 0.4);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .test-btn:hover {
+      background: rgba(36, 129, 204, 0.4);
+    }
+    pre {
+      background: #090d13;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 11px;
+      overflow-x: auto;
+      color: #9cdcfe;
+      margin-top: 10px;
+      border: 1px solid var(--card-border);
+    }
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      background: #2b5278;
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-size: 13px;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card header">
+      <div style="font-size: 38px;">⚡</div>
+      <h1>$safeName</h1>
+      <p class="sub">End-to-End Encrypted P2P Direct Connect</p>
+      <div class="badge-status">
+        <span class="dot"></span> Online &amp; Listening
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="info-row">
+        <span class="info-label">Peer Name</span>
+        <span class="info-val">$safeName</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Device ID</span>
+        <span class="info-val">${safeId.length > 12 ? '${safeId.substring(0, 12)}...' : safeId}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Safety Fingerprint</span>
+        <span class="info-val fingerprint">$safetyFingerprint</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Protocol</span>
+        <span class="info-val">${AppConstants.protocolVersion}</span>
+      </div>
+
+      <div class="qr-wrap">
+        <img class="qr-img" width="180" height="180" src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${Uri.encodeComponent(deepLink)}" alt="Connection QR Code" />
+      </div>
+
+      <a href="$deepLink" class="btn btn-primary">📱 Open in OZO App</a>
+      <button onclick="copyText('$deepLink', 'OZO connection link copied to clipboard!')" class="btn btn-secondary">📋 Copy Deep Link</button>
+      <button onclick="copyText('$webUrl', 'Public web link copied!')" class="btn btn-secondary">🌐 Copy Web Link</button>
+    </div>
+
+    <div class="card">
+      <div class="api-header">
+        <span>⚡ Public REST &amp; WebSocket API</span>
+        <span style="font-size: 11px; color: var(--text-dim);">Zero-Auth Local/Public</span>
+      </div>
+      <div class="endpoint">
+        <span><span class="method">GET</span> /api/info</span>
+        <button class="test-btn" onclick="callApi('/api/info')">Test Live</button>
+      </div>
+      <div class="endpoint">
+        <span><span class="method">GET</span> /api/connect</span>
+        <button class="test-btn" onclick="callApi('/api/connect')">Test Live</button>
+      </div>
+      <div class="endpoint">
+        <span><span class="method">GET</span> /api/health</span>
+        <button class="test-btn" onclick="callApi('/api/health')">Test Live</button>
+      </div>
+      <div class="endpoint">
+        <span><span class="method">POST</span> /api/connect</span>
+        <span style="font-size: 11px; color: var(--text-dim);">Announce &amp; Register</span>
+      </div>
+      <div class="endpoint">
+        <span><span class="method">WS</span> $wsUrl</span>
+        <span style="font-size: 11px; color: var(--text-dim);">E2EE Chat Socket</span>
+      </div>
+      <pre id="api-output" style="display:none;"></pre>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    async function callApi(path) {
+      const out = document.getElementById('api-output');
+      out.style.display = 'block';
+      out.textContent = 'Fetching ' + path + '...';
+      try {
+        const res = await fetch(path);
+        const data = await res.json();
+        out.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        out.textContent = 'Error: ' + e;
+      }
+    }
+    function copyText(text, msg) {
+      navigator.clipboard.writeText(text).then(() => showToast(msg)).catch(() => prompt('Copy:', text));
+    }
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 2500);
+    }
+  </script>
+</body>
+</html>''';
   }
 }
