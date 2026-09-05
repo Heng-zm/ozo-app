@@ -1,15 +1,23 @@
 import 'dart:convert';
 import 'dart:math';
-import 'package:crypto/crypto.dart';
+import 'package:crypto/crypto.dart' as crypto;
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../database/models.dart';
 
-/// Manages PIN authentication, biometric simulation, and auto-lock state
+/// Manages PIN authentication with PBKDF2-HMAC-SHA256 (100,000 iterations),
+/// biometric gating, and auto-lock state.
 class SecurityService extends ChangeNotifier {
   static final SecurityService _instance = SecurityService._internal();
   factory SecurityService() => _instance;
   SecurityService._internal();
+
+  static final _pbkdf2 = Pbkdf2(
+    macAlgorithm: Hmac.sha256(),
+    iterations: 100000,
+    bits: 256,
+  );
 
   static const String _prefPinEnabled = 'security_pin_enabled';
   static const String _prefPinHash = 'security_pin_hash';
@@ -48,21 +56,33 @@ class SecurityService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Verifies entered PIN against stored salt and hash
-  bool verifyPin(String pin) {
+  /// Verifies entered PIN against stored salt and hash using PBKDF2 (100k rounds)
+  Future<bool> verifyPin(String pin) async {
     if (!isPinConfigured) return true;
-    final hash = _computeHash(pin, _settings.pinSalt);
+
+    // Detect legacy SHA-256 (64 hex characters) and auto-upgrade to PBKDF2
+    if (_settings.pinHash.length == 64) {
+      final legacyHash = crypto.sha256.convert(utf8.encode('$pin:${_settings.pinSalt}:ozo_lock_salt')).toString();
+      if (legacyHash == _settings.pinHash) {
+        await setPin(pin);
+        return true;
+      }
+      return false;
+    }
+
+    final hash = await computeHash(pin, _settings.pinSalt);
     return hash == _settings.pinHash;
   }
 
   /// Attempts to unlock the application with the given PIN
-  bool unlock(String pin) {
+  Future<bool> unlock(String pin) async {
     if (!isPinConfigured) {
       _isLocked = false;
       notifyListeners();
       return true;
     }
-    if (verifyPin(pin)) {
+    final verified = await verifyPin(pin);
+    if (verified) {
       _isLocked = false;
       updateActivity();
       notifyListeners();
@@ -71,7 +91,7 @@ class SecurityService extends ChangeNotifier {
     return false;
   }
 
-  /// Unlock directly when biometric authentication succeeds
+  /// Unlock directly when biometric authentication succeeds (biometric gates the stored credential)
   void unlockBiometric() {
     _isLocked = false;
     updateActivity();
@@ -86,10 +106,10 @@ class SecurityService extends ChangeNotifier {
     }
   }
 
-  /// Configures or changes the PIN code
+  /// Configures or changes the PIN code using PBKDF2 and a fresh 32-byte secure salt
   Future<void> setPin(String newPin) async {
     final salt = _generateRandomSalt();
-    final hash = _computeHash(newPin, salt);
+    final hash = await computeHash(newPin, salt);
 
     _settings = _settings.copyWith(
       isPinEnabled: true,
@@ -173,14 +193,22 @@ class SecurityService extends ChangeNotifier {
     }
   }
 
+  /// Generates a cryptographically secure 32-byte salt
   static String _generateRandomSalt() {
     final rand = Random.secure();
-    final bytes = List<int>.generate(16, (_) => rand.nextInt(256));
+    final bytes = List<int>.generate(32, (_) => rand.nextInt(256));
     return base64Encode(bytes);
   }
 
-  static String _computeHash(String pin, String salt) {
-    final bytes = utf8.encode('$pin:$salt:ozo_lock_salt');
-    return sha256.convert(bytes).toString();
+  /// Derives key from PIN and salt using PBKDF2-HMAC-SHA256 with 100,000 iterations
+  static Future<String> computeHash(String pin, String saltBase64) async {
+    final saltBytes = base64Decode(saltBase64);
+    final secretKey = await _pbkdf2.deriveKeyFromPassword(
+      password: pin,
+      nonce: saltBytes,
+    );
+    final keyBytes = await secretKey.extractBytes();
+    return base64Encode(keyBytes);
   }
 }
+

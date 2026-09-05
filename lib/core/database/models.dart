@@ -825,3 +825,86 @@ class DirectHotspotInfo {
   }
 }
 
+/// Short-lived single-use pairing token for QR-based device linking
+class PairingToken {
+  final String nonce;
+  final String deviceId;
+  final String deviceName;
+  final String publicKey;
+  final int timestamp;
+  final int expiresAt;
+  bool isConsumed;
+
+  PairingToken({
+    required this.nonce,
+    required this.deviceId,
+    required this.deviceName,
+    required this.publicKey,
+    required this.timestamp,
+    required this.expiresAt,
+    this.isConsumed = false,
+  });
+
+  bool get isExpired => DateTime.now().millisecondsSinceEpoch > expiresAt;
+  bool get isValid => !isConsumed && !isExpired;
+
+  PairingToken copyWith({
+    String? nonce,
+    String? deviceId,
+    String? deviceName,
+    String? publicKey,
+    int? timestamp,
+    int? expiresAt,
+    bool? isConsumed,
+  }) {
+    return PairingToken(
+      nonce: nonce ?? this.nonce,
+      deviceId: deviceId ?? this.deviceId,
+      deviceName: deviceName ?? this.deviceName,
+      publicKey: publicKey ?? this.publicKey,
+      timestamp: timestamp ?? this.timestamp,
+      expiresAt: expiresAt ?? this.expiresAt,
+      isConsumed: isConsumed ?? this.isConsumed,
+    );
+  }
+
+  String toUriString() =>
+      'ozo://pair?id=$deviceId&name=${Uri.encodeComponent(deviceName)}&token=$nonce&ts=$timestamp&exp=$expiresAt&pk=${Uri.encodeComponent(publicKey)}';
+
+  static PairingToken? parse(String input) {
+    try {
+      final uri = Uri.parse(input.trim());
+      if (uri.scheme == 'ozo' && uri.host == 'pair') {
+        final q = uri.queryParameters;
+        final ts = int.tryParse(q['ts'] ?? '') ?? 0;
+        final exp = int.tryParse(q['exp'] ?? '') ?? (ts + 90000);
+        return PairingToken(
+          nonce: q['token'] ?? '',
+          deviceId: q['id'] ?? '',
+          deviceName: q['name'] ?? 'Remote Device',
+          publicKey: q['pk'] ?? '',
+          timestamp: ts,
+          expiresAt: exp,
+        );
+      }
+    } catch (_) {}
+    return null;
+  }
+}
+
+/// Request for primary device user to explicitly approve or reject a companion link
+class PairingConfirmationRequest {
+  final LinkedDevice device;
+  final String tokenNonce;
+  final void Function() onConfirm;
+  final void Function() onReject;
+
+  const PairingConfirmationRequest({
+    required this.device,
+    required this.tokenNonce,
+    required this.onConfirm,
+    required this.onReject,
+  });
+}
+
+

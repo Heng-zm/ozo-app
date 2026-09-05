@@ -262,7 +262,7 @@ class ChatProvider extends ChangeNotifier {
     server.onReactionReceived = _handleIncomingReaction;
     server.onMessageDeleted = _handleIncomingMessageDeleted;
     server.onCallSignaling = _handleIncomingCallSignaling;
-    server.onDevicePaired = _handleDevicePaired;
+    server.onDevicePairRequest = _handleDevicePairRequest;
     server.onBackupReceived = _handleBackupReceived;
     server.onMessagePinned = _handleMessagePinned;
     server.onMessageUnpinned = _handleMessageUnpinned;
@@ -888,8 +888,60 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  void _handleDevicePaired(LinkedDevice device) {
-    database.saveLinkedDevice(device);
+  PairingToken? _activePairingToken;
+  PairingToken get activePairingToken => _activePairingToken ?? createPairingToken();
+
+  PairingConfirmationRequest? _pendingPairingRequest;
+  PairingConfirmationRequest? get pendingPairingRequest => _pendingPairingRequest;
+
+  PairingToken createPairingToken() {
+    final nonce = _uuid.v4();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final token = PairingToken(
+      nonce: nonce,
+      deviceId: _deviceId,
+      deviceName: _deviceName,
+      publicKey: cryptoService.publicKeyBase64 ?? '',
+      timestamp: now,
+      expiresAt: now + 90000, // 90-second single-use token
+    );
+    _activePairingToken = token;
+    notifyListeners();
+    return token;
+  }
+
+  void clearPendingPairingRequest() {
+    _pendingPairingRequest = null;
+    notifyListeners();
+  }
+
+  void _handleDevicePairRequest(LinkedDevice device, String token) {
+    if (_activePairingToken == null || !_activePairingToken!.isValid) {
+      if (kDebugMode) print('Pairing request rejected: token invalid or expired');
+      return;
+    }
+    if (_activePairingToken!.nonce != token) {
+      if (kDebugMode) print('Pairing request rejected: token mismatch');
+      return;
+    }
+
+    // Invalidate token immediately to prevent replay attacks
+    _activePairingToken!.isConsumed = true;
+
+    // Require explicit confirmation from the primary device user
+    _pendingPairingRequest = PairingConfirmationRequest(
+      device: device,
+      tokenNonce: token,
+      onConfirm: () async {
+        await database.saveLinkedDevice(device);
+        _pendingPairingRequest = null;
+        notifyListeners();
+      },
+      onReject: () {
+        _pendingPairingRequest = null;
+        notifyListeners();
+      },
+    );
     notifyListeners();
   }
 
@@ -902,8 +954,8 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _handleMessageUnpinned(String chatId) {
-    database.unpinChatMessage(chatId);
+  void _handleMessageUnpinned(String chatId, [String? messageId]) {
+    database.unpinChatMessage(chatId, messageId);
     notifyListeners();
   }
 
@@ -1262,7 +1314,9 @@ class ChatProvider extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   ChatMessage? getPinnedMessage(String chatId) => database.getPinnedMessage(chatId);
+  List<ChatMessage> getPinnedMessages(String chatId) => database.getPinnedMessages(chatId);
   String? getPinnedMessageId(String chatId) => database.getPinnedMessageId(chatId);
+  List<String> getPinnedMessageIds(String chatId) => database.getPinnedMessageIds(chatId);
 
   Future<void> pinMessage(String chatId, String messageId) async {
     await database.pinChatMessage(chatId, messageId);
@@ -1273,8 +1327,17 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> unpinMessage(String chatId) async {
-    await database.unpinChatMessage(chatId);
+  Future<void> unpinMessage(String chatId, [String? messageId]) async {
+    await database.unpinChatMessage(chatId, messageId);
+    final peer = database.knownPeers[chatId];
+    if (peer != null) {
+      client.sendUnpinMessage(peer, chatId: chatId);
+    }
+    notifyListeners();
+  }
+
+  Future<void> unpinAllMessages(String chatId) async {
+    await database.unpinAllChatMessages(chatId);
     final peer = database.knownPeers[chatId];
     if (peer != null) {
       client.sendUnpinMessage(peer, chatId: chatId);
@@ -1359,7 +1422,7 @@ class ChatProvider extends ChangeNotifier {
 
   List<LinkedDevice> get linkedDevices => database.linkedDevices;
 
-  Future<void> pairWithPeer(Peer peer) async {
+  Future<void> pairWithPeer(Peer peer, {String? token}) async {
     final dev = LinkedDevice(
       id: peer.id,
       name: peer.name,
@@ -1374,6 +1437,7 @@ class ChatProvider extends ChangeNotifier {
       name: _deviceName,
       platform: _platform,
       pubKey: cryptoService.publicKeyBase64 ?? '',
+      token: token,
     );
     notifyListeners();
   }

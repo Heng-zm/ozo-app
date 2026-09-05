@@ -36,6 +36,7 @@ class _ActiveChatViewState extends State<ActiveChatView> {
   bool _isSearchingInChat = false;
   int _searchMatchIndex = 0;
   List<int> _matchedIndices = [];
+  int _pinnedMessageIndex = 0;
 
   @override
   void dispose() {
@@ -84,7 +85,7 @@ class _ActiveChatViewState extends State<ActiveChatView> {
     final isOnline = isGroup ? provider.isGroupHostOnline : peer!.isOnline;
     final isTyping = !isGroup && provider.isPeerTyping(peer!.id);
     final chatId = isGroup ? group!.id : peer!.id;
-    final pinnedMsg = provider.getPinnedMessage(chatId);
+    final pinnedMsgs = provider.getPinnedMessages(chatId);
 
     _scrollToBottom();
 
@@ -209,8 +210,8 @@ class _ActiveChatViewState extends State<ActiveChatView> {
               children: [
                 if (_isSearchingInChat)
                   _buildInChatSearchBar(context, messages),
-                if (pinnedMsg != null)
-                  _buildPinnedBanner(context, provider, pinnedMsg, messages),
+                if (pinnedMsgs.isNotEmpty)
+                  _buildPinnedBanner(context, provider, pinnedMsgs, messages),
                 // Banner
                 if (isGroup && !isOnline)
                   Container(
@@ -628,58 +629,84 @@ class _ActiveChatViewState extends State<ActiveChatView> {
   Widget _buildPinnedBanner(
     BuildContext context,
     ChatProvider provider,
-    ChatMessage pinnedMsg,
+    List<ChatMessage> pinnedMsgs,
     List<ChatMessage> messages,
   ) {
+    if (pinnedMsgs.isEmpty) return const SizedBox.shrink();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final chatId = widget.group?.id ?? widget.peer?.id ?? '';
+    final safeIndex = _pinnedMessageIndex.clamp(0, pinnedMsgs.length - 1);
+    final pinnedMsg = pinnedMsgs[safeIndex];
 
-    return InkWell(
-      onTap: () {
-        final index = messages.indexWhere((m) => m.id == pinnedMsg.id);
-        if (index != -1 && _scrollController.hasClients) {
-          final target = index * 80.0;
-          _scrollController.animateTo(
-            target.clamp(0.0, _scrollController.position.maxScrollExtent),
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
-          );
-        }
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF1E293B) : Colors.white,
-          border: Border(
-            bottom: BorderSide(
-              color: isDark ? Colors.white10 : Colors.black12,
-            ),
-            left: const BorderSide(
-              color: TelegramTheme.primaryBlue,
-              width: 3.5,
-            ),
+    void scrollToPinned(String msgId) {
+      final index = messages.indexWhere((m) => m.id == msgId);
+      if (index != -1 && _scrollController.hasClients) {
+        final target = index * 80.0;
+        _scrollController.animateTo(
+          target.clamp(0.0, _scrollController.position.maxScrollExtent),
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        border: Border(
+          bottom: BorderSide(
+            color: isDark ? Colors.white10 : Colors.black12,
+          ),
+          left: const BorderSide(
+            color: TelegramTheme.primaryBlue,
+            width: 3.5,
           ),
         ),
-        child: Row(
-          children: [
-            const Icon(
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(
               Icons.push_pin_rounded,
               color: TelegramTheme.primaryBlue,
               size: 18,
             ),
-            const SizedBox(width: 10),
-            Expanded(
+            onPressed: () => scrollToPinned(pinnedMsg.id),
+            tooltip: 'Jump to message',
+          ),
+          Expanded(
+            child: InkWell(
+              onTap: () => scrollToPinned(pinnedMsg.id),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    'Pinned Message • ${pinnedMsg.senderName}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: TelegramTheme.primaryBlue,
-                    ),
+                  Row(
+                    children: [
+                      Text(
+                        'Pinned Message • ${pinnedMsg.senderName}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: TelegramTheme.primaryBlue,
+                        ),
+                      ),
+                      if (pinnedMsgs.length > 1) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: TelegramTheme.primaryBlue.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            '${safeIndex + 1} of ${pinnedMsgs.length}',
+                            style: const TextStyle(fontSize: 10, color: TelegramTheme.primaryBlue, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   Text(
                     pinnedMsg.content,
@@ -693,13 +720,39 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 ],
               ),
             ),
+          ),
+          if (pinnedMsgs.length > 1) ...[
             IconButton(
-              icon: const Icon(Icons.close_rounded, size: 18),
-              onPressed: () => provider.unpinMessage(chatId),
-              tooltip: 'Unpin Message',
+              icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 18),
+              tooltip: 'Previous Pin',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              onPressed: () {
+                setState(() {
+                  _pinnedMessageIndex = (_pinnedMessageIndex - 1 + pinnedMsgs.length) % pinnedMsgs.length;
+                });
+              },
             ),
+            const SizedBox(width: 4),
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+              tooltip: 'Next Pin',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              onPressed: () {
+                setState(() {
+                  _pinnedMessageIndex = (_pinnedMessageIndex + 1) % pinnedMsgs.length;
+                });
+              },
+            ),
+            const SizedBox(width: 4),
           ],
-        ),
+          IconButton(
+            icon: const Icon(Icons.close_rounded, size: 18),
+            onPressed: () => provider.unpinMessage(chatId, pinnedMsg.id),
+            tooltip: 'Unpin Message',
+          ),
+        ],
       ),
     );
   }

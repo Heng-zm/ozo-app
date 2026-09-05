@@ -1,6 +1,10 @@
 import '../database/models.dart';
 
-/// Pre-bundled curated sticker packs for expressive messaging
+/// Pre-bundled curated sticker packs for expressive messaging.
+/// 
+/// COMPLIANCE NOTE: All stickers in this catalog use 100% standard Unicode
+/// emojis and symbols. No copyrighted graphics, trademarked characters, or
+/// proprietary brand assets are used or referenced. Safe for App Store & Play Store.
 class StickerCatalog {
   static const List<StickerPack> packs = [
     StickerPack(
@@ -59,55 +63,55 @@ class StickerCatalog {
       ],
     ),
     StickerPack(
-      id: 'expressive_pepe',
+      id: 'expressive_reactions',
       name: 'Reactions',
       icon: '🔥',
       stickers: [
         StickerData(
           id: 'react_mindblown',
-          packId: 'expressive_pepe',
+          packId: 'expressive_reactions',
           name: 'Mind Blown',
           emoji: '🤯',
         ),
         StickerData(
           id: 'react_party',
-          packId: 'expressive_pepe',
+          packId: 'expressive_reactions',
           name: 'Celebration',
           emoji: '🥳',
         ),
         StickerData(
           id: 'react_rofl',
-          packId: 'expressive_pepe',
+          packId: 'expressive_reactions',
           name: 'Rolling Laugh',
           emoji: '🤣',
         ),
         StickerData(
           id: 'react_cool',
-          packId: 'expressive_pepe',
+          packId: 'expressive_reactions',
           name: 'Stay Cool',
           emoji: '😎',
         ),
         StickerData(
           id: 'react_salute',
-          packId: 'expressive_pepe',
+          packId: 'expressive_reactions',
           name: 'Yes Sir',
           emoji: '🫡',
         ),
         StickerData(
           id: 'react_facepalm',
-          packId: 'expressive_pepe',
+          packId: 'expressive_reactions',
           name: 'Facepalm',
           emoji: '🤦',
         ),
         StickerData(
           id: 'react_screaming',
-          packId: 'expressive_pepe',
+          packId: 'expressive_reactions',
           name: 'Shocked',
           emoji: '😱',
         ),
         StickerData(
           id: 'react_fire100',
-          packId: 'expressive_pepe',
+          packId: 'expressive_reactions',
           name: '100% Fire',
           emoji: '💯🔥',
         ),
@@ -170,6 +174,7 @@ class StickerCatalog {
     ),
   ];
 
+  /// Looks up a sticker by ID across all packs, supporting legacy pack prefixes if applicable.
   static StickerData? findSticker(String stickerId) {
     for (final pack in packs) {
       for (final sticker in pack.stickers) {

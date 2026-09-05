@@ -43,7 +43,7 @@ class P2pServer {
   ReactionCallback? onReactionReceived;
   DeleteMessageCallback? onMessageDeleted;
   CallSignalingCallback? onCallSignaling;
-  void Function(LinkedDevice device)? onDevicePaired;
+  void Function(LinkedDevice device, String token)? onDevicePairRequest;
   void Function(Map<String, dynamic> backupData)? onBackupReceived;
   void Function(String chatId, String messageId)? onMessagePinned;
   void Function(String chatId)? onMessageUnpinned;
@@ -281,7 +281,8 @@ class P2pServer {
                 publicKey: msg['pubKey'] as String? ?? '',
                 linkedAt: DateTime.now(),
               );
-              onDevicePaired?.call(dev);
+              final token = msg['token'] as String? ?? '';
+              onDevicePairRequest?.call(dev, token);
               break;
             case 'BACKUP_TRANSFER':
               final backup = msg['backup'] as Map<String, dynamic>;

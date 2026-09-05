@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:crypto/crypto.dart';
+import 'package:cryptography/cryptography.dart' as crypto_pkg;
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -22,7 +24,7 @@ class AppDatabase {
   final Map<String, String> _pinnedKeys = {}; // deviceId -> originalPublicKey
   final Map<String, GroupChat> _groups = {};
   final List<UserAccount> _accounts = [];
-  final Map<String, String> _pinnedChatMessages = {}; // chatId -> messageId
+  final Map<String, List<String>> _pinnedChatMessages = {}; // chatId -> list of messageIds
   final List<LinkedDevice> _linkedDevices = [];
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
@@ -35,7 +37,7 @@ class AppDatabase {
       return b.createdAt.compareTo(a.createdAt);
     });
   List<UserAccount> get accounts => List.unmodifiable(_accounts);
-  Map<String, String> get pinnedChatMessages => Map.unmodifiable(_pinnedChatMessages);
+  Map<String, List<String>> get pinnedChatMessages => Map.unmodifiable(_pinnedChatMessages);
   List<LinkedDevice> get linkedDevices => List.unmodifiable(_linkedDevices);
 
   UserAccount? get currentAccount {
@@ -71,8 +73,9 @@ class AppDatabase {
     final dbPath = p.join(dbDir.path, 'lan_telegram.db');
     _db = await sqflite.openDatabase(
       dbPath,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
 
     // Enable WAL mode for high concurrency read/write
@@ -100,10 +103,17 @@ class AppDatabase {
   Future<void> _createAuxiliaryTables(sqflite.Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS chat_pinned_messages (
-        chat_id TEXT PRIMARY KEY,
-        message_id TEXT NOT NULL
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        pinned_at INTEGER NOT NULL,
+        pin_order INTEGER NOT NULL,
+        UNIQUE(chat_id, message_id)
       );
     ''');
+    try {
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_pinned_chat_order ON chat_pinned_messages(chat_id, pin_order ASC);');
+    } catch (_) {}
     await db.execute('''
       CREATE TABLE IF NOT EXISTS linked_devices (
         id TEXT PRIMARY KEY,
@@ -114,6 +124,46 @@ class AppDatabase {
         last_seen INTEGER NOT NULL
       );
     ''');
+  }
+
+  Future<void> _onUpgrade(sqflite.Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS chat_pinned_messages_v2 (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            pinned_at INTEGER NOT NULL,
+            pin_order INTEGER NOT NULL,
+            UNIQUE(chat_id, message_id)
+          );
+        ''');
+        final oldRows = await db.query('chat_pinned_messages');
+        int order = 0;
+        for (final row in oldRows) {
+          final chatId = row['chat_id'] as String;
+          final msgId = row['message_id'] as String;
+          final now = DateTime.now().millisecondsSinceEpoch;
+          await db.insert(
+            'chat_pinned_messages_v2',
+            {
+              'id': '${chatId}_$msgId',
+              'chat_id': chatId,
+              'message_id': msgId,
+              'pinned_at': now,
+              'pin_order': order++,
+            },
+            conflictAlgorithm: sqflite.ConflictAlgorithm.ignore,
+          );
+        }
+        await db.execute('DROP TABLE IF EXISTS chat_pinned_messages;');
+        await db.execute('ALTER TABLE chat_pinned_messages_v2 RENAME TO chat_pinned_messages;');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_pinned_chat_order ON chat_pinned_messages(chat_id, pin_order ASC);');
+      } catch (_) {
+        await _createAuxiliaryTables(db);
+      }
+    }
   }
 
   Future<void> _onCreate(sqflite.Database db, int version) async {
@@ -771,50 +821,88 @@ class AppDatabase {
   Future<void> _loadPinnedChatMessagesFromDb() async {
     if (_db == null) return;
     try {
-      final rows = await _db!.query('chat_pinned_messages');
+      final rows = await _db!.query('chat_pinned_messages', orderBy: 'pin_order ASC, pinned_at DESC');
       _pinnedChatMessages.clear();
       for (final row in rows) {
-        _pinnedChatMessages[row['chat_id'] as String] =
-            row['message_id'] as String;
+        final chatId = row['chat_id'] as String;
+        final msgId = row['message_id'] as String;
+        _pinnedChatMessages.putIfAbsent(chatId, () => []).add(msgId);
       }
     } catch (_) {}
   }
 
-  String? getPinnedMessageId(String chatId) => _pinnedChatMessages[chatId];
-
-  ChatMessage? getPinnedMessage(String chatId) {
-    final msgId = _pinnedChatMessages[chatId];
-    if (msgId == null) return null;
-    try {
-      return _messages.firstWhere((m) =>
-          m.id == msgId &&
-          (m.chatId == chatId || (m.isGroup && m.groupId == chatId)));
-    } catch (_) {
-      return null;
+  List<ChatMessage> getPinnedMessages(String chatId) {
+    final msgIds = _pinnedChatMessages[chatId];
+    if (msgIds == null || msgIds.isEmpty) return [];
+    final res = <ChatMessage>[];
+    for (final id in msgIds) {
+      try {
+        final found = _messages.firstWhere((m) =>
+            m.id == id &&
+            (m.chatId == chatId || (m.isGroup && m.groupId == chatId)));
+        res.add(found);
+      } catch (_) {}
     }
+    return res;
   }
 
+  ChatMessage? getPinnedMessage(String chatId) {
+    final list = getPinnedMessages(chatId);
+    return list.isNotEmpty ? list.first : null;
+  }
+
+  String? getPinnedMessageId(String chatId) {
+    final msgIds = _pinnedChatMessages[chatId];
+    return (msgIds != null && msgIds.isNotEmpty) ? msgIds.first : null;
+  }
+
+  List<String> getPinnedMessageIds(String chatId) =>
+      List.unmodifiable(_pinnedChatMessages[chatId] ?? []);
+
   Future<void> pinChatMessage(String chatId, String messageId) async {
-    _pinnedChatMessages[chatId] = messageId;
+    final list = _pinnedChatMessages.putIfAbsent(chatId, () => []);
+    if (!list.contains(messageId)) {
+      list.insert(0, messageId);
+    }
     if (_db != null && _db!.isOpen) {
+      final now = DateTime.now().millisecondsSinceEpoch;
       await _db!.insert(
         'chat_pinned_messages',
-        {'chat_id': chatId, 'message_id': messageId},
+        {
+          'id': '${chatId}_$messageId',
+          'chat_id': chatId,
+          'message_id': messageId,
+          'pinned_at': now,
+          'pin_order': 0,
+        },
         conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
       );
     }
   }
 
-  Future<void> unpinChatMessage(String chatId) async {
-    _pinnedChatMessages.remove(chatId);
-    if (_db != null && _db!.isOpen) {
-      await _db!.delete(
-        'chat_pinned_messages',
-        where: 'chat_id = ?',
-        whereArgs: [chatId],
-      );
+  Future<void> unpinChatMessage(String chatId, [String? messageId]) async {
+    if (messageId != null) {
+      _pinnedChatMessages[chatId]?.remove(messageId);
+      if (_db != null && _db!.isOpen) {
+        await _db!.delete(
+          'chat_pinned_messages',
+          where: 'chat_id = ? AND message_id = ?',
+          whereArgs: [chatId, messageId],
+        );
+      }
+    } else {
+      _pinnedChatMessages.remove(chatId);
+      if (_db != null && _db!.isOpen) {
+        await _db!.delete(
+          'chat_pinned_messages',
+          where: 'chat_id = ?',
+          whereArgs: [chatId],
+        );
+      }
     }
   }
+
+  Future<void> unpinAllChatMessages(String chatId) => unpinChatMessage(chatId);
 
   // ---------------------------------------------------------------------------
   // Linked Devices
@@ -875,9 +963,15 @@ class AppDatabase {
   // Encrypted Backup & Restore
   // ---------------------------------------------------------------------------
 
+  static final _backupPbkdf2 = crypto_pkg.Pbkdf2(
+    macAlgorithm: crypto_pkg.Hmac.sha256(),
+    iterations: 100000,
+    bits: 256,
+  );
+
   Future<Map<String, dynamic>> exportEncryptedBackup(String password) async {
     final backupData = {
-      'version': 1,
+      'version': 2,
       'exported_at': DateTime.now().toIso8601String(),
       'accounts': _accounts.map((a) => a.toJson()).toList(),
       'peers': _knownPeers.values.map((p) => p.toJson()).toList(),
@@ -892,14 +986,20 @@ class AppDatabase {
     final rawBytes = utf8.encode(rawJson);
     final checksum = sha256.convert(rawBytes).toString();
 
-    final salt = 'ozo_vault_salt_v1';
-    final keyBytes = sha256.convert(utf8.encode('$password:$salt')).bytes;
+    final rand = Random.secure();
+    final saltBytes = List<int>.generate(32, (_) => rand.nextInt(256));
+    final secretKey = await _backupPbkdf2.deriveKeyFromPassword(
+      password: password,
+      nonce: saltBytes,
+    );
+    final keyBytes = await secretKey.extractBytes();
     final encryptedBytes = _encryptBackupBytes(rawBytes, keyBytes);
 
     return {
       'format': 'ozobackup',
-      'version': 1,
-      'salt': salt,
+      'version': 2,
+      'kdf': 'pbkdf2-hmac-sha256-100k',
+      'salt': base64Encode(saltBytes),
       'checksum': checksum,
       'payload': base64Encode(encryptedBytes),
     };
@@ -909,11 +1009,23 @@ class AppDatabase {
       Map<String, dynamic> container, String password) async {
     try {
       if (container['format'] != 'ozobackup') return false;
-      final salt = container['salt'] as String? ?? 'ozo_vault_salt_v1';
+      final version = container['version'] as int? ?? 1;
+      final saltStr = container['salt'] as String? ?? 'ozo_vault_salt_v1';
       final expectedChecksum = container['checksum'] as String;
       final payloadBase64 = container['payload'] as String;
 
-      final keyBytes = sha256.convert(utf8.encode('$password:$salt')).bytes;
+      List<int> keyBytes;
+      if (version >= 2) {
+        final saltBytes = base64Decode(saltStr);
+        final secretKey = await _backupPbkdf2.deriveKeyFromPassword(
+          password: password,
+          nonce: saltBytes,
+        );
+        keyBytes = await secretKey.extractBytes();
+      } else {
+        keyBytes = sha256.convert(utf8.encode('$password:$saltStr')).bytes;
+      }
+
       final encryptedBytes = base64Decode(payloadBase64);
       final decryptedBytes = _decryptBackupBytes(encryptedBytes, keyBytes);
 
@@ -954,7 +1066,13 @@ class AppDatabase {
       if (data['pinned_chat_messages'] is Map) {
         final Map<String, dynamic> pcm = data['pinned_chat_messages'];
         for (final entry in pcm.entries) {
-          await pinChatMessage(entry.key, entry.value.toString());
+          if (entry.value is List) {
+            for (final msgId in entry.value) {
+              await pinChatMessage(entry.key, msgId.toString());
+            }
+          } else {
+            await pinChatMessage(entry.key, entry.value.toString());
+          }
         }
       }
 

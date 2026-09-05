@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lan_telegram/core/database/models.dart';
+import 'package:lan_telegram/core/stickers/sticker_packs.dart';
 
 void main() {
   test('Peer serialization and deserialization', () {
@@ -437,5 +438,80 @@ void main() {
     expect(parsed.deviceId, equals('device-node-1'));
     expect(parsed.deviceName, equals('Hotspot Phone'));
   });
+
+  test('PairingToken serialization, expiration, and replay protection', () {
+    final now = DateTime.now();
+    final validToken = PairingToken(
+      nonce: 'secure-single-use-token-123',
+      deviceId: 'primary-phone',
+      deviceName: 'Alice iPhone',
+      publicKey: 'mock-primary-pk',
+      timestamp: now.millisecondsSinceEpoch,
+      expiresAt: now.add(const Duration(seconds: 90)).millisecondsSinceEpoch,
+      isConsumed: false,
+    );
+
+    expect(validToken.isValid, isTrue);
+
+    // Serialization to URI and parsing
+    final uri = validToken.toUriString();
+    expect(uri, startsWith('ozo://pair?'));
+    expect(uri, contains('token=secure-single-use-token-123'));
+    expect(uri, contains('id=primary-phone'));
+
+    final parsed = PairingToken.parse(uri);
+    expect(parsed, isNotNull);
+    expect(parsed!.nonce, equals('secure-single-use-token-123'));
+    expect(parsed.deviceId, equals('primary-phone'));
+    expect(parsed.deviceName, equals('Alice iPhone'));
+    expect(parsed.publicKey, equals('mock-primary-pk'));
+    expect(parsed.isValid, isTrue);
+
+    // Expired token is invalid
+    final expiredToken = PairingToken(
+      nonce: 'expired-token',
+      deviceId: 'primary-phone',
+      deviceName: 'Alice iPhone',
+      publicKey: 'mock-primary-pk',
+      timestamp: now.subtract(const Duration(seconds: 100)).millisecondsSinceEpoch,
+      expiresAt: now.subtract(const Duration(seconds: 5)).millisecondsSinceEpoch,
+      isConsumed: false,
+    );
+    expect(expiredToken.isValid, isFalse);
+
+    // Consumed token (replay protection) is invalid even before expiry
+    final consumedToken = validToken.copyWith(isConsumed: true);
+    expect(consumedToken.isValid, isFalse);
+
+    // PairingConfirmationRequest model
+    final confirmReq = PairingConfirmationRequest(
+      device: LinkedDevice(
+        id: 'laptop-node',
+        name: 'Bob MacBook',
+        platform: 'macos',
+        publicKey: 'mock-pk',
+        linkedAt: now,
+        lastSeen: now,
+      ),
+      tokenNonce: 'req-token-999',
+      onConfirm: () {},
+      onReject: () {},
+    );
+    expect(confirmReq.tokenNonce, equals('req-token-999'));
+    expect(confirmReq.device.name, equals('Bob MacBook'));
+  });
+
+  test('StickerCatalog uses expressive_reactions and standard Unicode', () {
+    final reactionPack = StickerCatalog.packs.firstWhere(
+      (p) => p.id == 'expressive_reactions',
+    );
+    expect(reactionPack.name, equals('Reactions'));
+    expect(reactionPack.stickers.length, greaterThan(0));
+
+    final sticker = StickerCatalog.findSticker('react_party');
+    expect(sticker, isNotNull);
+    expect(sticker!.emoji, equals('🥳'));
+  });
 }
+
 

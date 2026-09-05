@@ -48,6 +48,10 @@ class _BackupDialogState extends State<BackupDialog>
       setState(() => _statusMessage = 'Please enter a backup password');
       return;
     }
+    if (pwd.length < 8) {
+      setState(() => _statusMessage = 'Password must be at least 8 characters for PBKDF2 vault encryption');
+      return;
+    }
 
     setState(() {
       _isProcessing = true;
@@ -60,7 +64,7 @@ class _BackupDialogState extends State<BackupDialog>
       setState(() {
         _exportedPayload = jsonEncode(backup);
         _isProcessing = false;
-        _statusMessage = 'Backup created successfully! Encrypted with AES/ChaCha20.';
+        _statusMessage = 'Backup created successfully! Encrypted with PBKDF2 (100k rounds) & Counter-Mode cipher.';
       });
     } catch (e) {
       setState(() {
@@ -106,6 +110,10 @@ class _BackupDialogState extends State<BackupDialog>
     final pwd = _migratePasswordController.text.trim();
     if (pwd.isEmpty || _selectedPeerForMigration == null) {
       setState(() => _statusMessage = 'Please select a peer and enter a password');
+      return;
+    }
+    if (pwd.length < 8) {
+      setState(() => _statusMessage = 'Password must be at least 8 characters for PBKDF2 vault encryption');
       return;
     }
 
@@ -239,11 +247,33 @@ class _BackupDialogState extends State<BackupDialog>
                           controller: _exportPasswordController,
                           obscureText: true,
                           decoration: InputDecoration(
-                            labelText: 'Set Backup Password',
+                            labelText: 'Set Backup Password (min 8 chars)',
                             prefixIcon: const Icon(Icons.lock_outline_rounded),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+                          ),
+                          child: const Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.shield_outlined, size: 18, color: TelegramTheme.primaryBlue),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Protected by PBKDF2 (100,000 rounds) + 32-byte per-archive salt. Backup strength depends on your password. Use at least 8 characters.',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey, height: 1.3),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                         const SizedBox(height: 16),

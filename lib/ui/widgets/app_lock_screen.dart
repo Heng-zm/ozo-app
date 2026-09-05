@@ -43,7 +43,7 @@ class _AppLockScreenState extends State<AppLockScreen>
     }
   }
 
-  void _onKeyPress(String val, ChatProvider provider) {
+  Future<void> _onKeyPress(String val, ChatProvider provider) async {
     if (_enteredPin.length >= 6) return;
     setState(() {
       _errorMessage = null;
@@ -51,15 +51,15 @@ class _AppLockScreenState extends State<AppLockScreen>
     });
 
     if (_enteredPin.length >= 4) {
-      // Check PIN
-      final verified = provider.security.verifyPin(_enteredPin);
-      if (verified) {
-        provider.security.unlock(_enteredPin);
+      final pinToVerify = _enteredPin;
+      final unlocked = await provider.security.unlock(pinToVerify);
+      if (!mounted) return;
+      if (unlocked) {
         setState(() {
           _enteredPin = '';
           _errorMessage = null;
         });
-      } else if (_enteredPin.length == 4 || _enteredPin.length == 6) {
+      } else if (pinToVerify.length == 4 || pinToVerify.length == 6) {
         setState(() {
           _errorMessage = 'Incorrect Passcode';
           _enteredPin = '';

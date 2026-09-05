@@ -388,13 +388,14 @@ class P2pClient {
     }
   }
 
-  /// Sends device pairing credentials
+  /// Sends device pairing credentials with one-time pairing token
   Future<bool> sendDevicePairing(
     Peer peer, {
     required String id,
     required String name,
     required String platform,
     required String pubKey,
+    String? token,
   }) async {
     final socket = await getOrConnect(peer);
     if (socket == null) return false;
@@ -405,6 +406,8 @@ class P2pClient {
         'name': name,
         'platform': platform,
         'pubKey': pubKey,
+        'token': token ?? '',
+        'ts': DateTime.now().millisecondsSinceEpoch,
         'senderId': deviceId,
       }));
       return true;
