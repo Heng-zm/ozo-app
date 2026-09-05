@@ -8,8 +8,8 @@ import '../database/models.dart';
 /// Prioritizes subnet broadcast and directed-broadcast addresses;
 /// treats multicast as an optional, soft-failing enhancement.
 class DiscoveryService {
-  final String deviceId;
-  final String deviceName;
+  String deviceId;
+  String deviceName;
   final int p2pPort;
   final String publicKey;
   final String platform;
@@ -34,6 +34,11 @@ class DiscoveryService {
     required this.publicKey,
     required this.platform,
   });
+
+  void updateIdentity({String? deviceId, String? deviceName}) {
+    if (deviceId != null) this.deviceId = deviceId;
+    if (deviceName != null) this.deviceName = deviceName;
+  }
 
   /// Starts listening for UDP beacons and broadcasts periodic announcements
   Future<void> start() async {

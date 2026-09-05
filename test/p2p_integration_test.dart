@@ -174,14 +174,22 @@ void main() {
     expect(actualHash, equals(expectedHash));
 
     // Cleanup
-    await tempDir.delete(recursive: true);
-    await tempDirAlice.delete(recursive: true);
-    await tempDirBob.delete(recursive: true);
+    await aliceDb.close();
+    await bobDb.close();
     await aliceServer.stop();
     await bobServer.stop();
     aliceClient.close();
     bobClient.close();
     aliceTransferManager.dispose();
     bobTransferManager.dispose();
+    try {
+      await tempDir.delete(recursive: true);
+    } catch (_) {}
+    try {
+      await tempDirAlice.delete(recursive: true);
+    } catch (_) {}
+    try {
+      await tempDirBob.delete(recursive: true);
+    } catch (_) {}
   });
 }

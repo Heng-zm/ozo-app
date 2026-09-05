@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/database/models.dart';
 import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
+import '../widgets/account_dialog.dart';
 import '../widgets/active_chat_view.dart';
+import '../widgets/chat_folders_bar.dart';
 import '../widgets/group_create_dialog.dart';
 import '../widgets/peer_list_tile.dart';
 import '../widgets/remote_connection_dialog.dart';
@@ -85,79 +88,341 @@ class HomeScreen extends StatelessWidget {
 
   Widget _buildSidebar(BuildContext context, ChatProvider provider) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final knownPeers = provider.database.knownPeers.values.toList()
-      ..sort((a, b) {
-        if (a.isOnline && !b.isOnline) return -1;
-        if (!a.isOnline && b.isOnline) return 1;
-        return b.lastSeen.compareTo(a.lastSeen);
-      });
-    final groups = provider.database.groups;
 
     return Container(
       color: isDark ? TelegramTheme.darkSidebar : TelegramTheme.lightSidebar,
       child: Column(
         children: [
           _buildSidebarHeader(context, provider, isDark),
+          _buildSearchBar(context, provider, isDark),
+          const ChatFoldersBar(),
           Expanded(
-            child: (knownPeers.isEmpty && groups.isEmpty)
-                ? _buildEmptyPeersDiagnostic(context, provider)
-                : ListView(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    children: [
-                      // Group Chats Section
-                      if (groups.isNotEmpty) ...[
-                        _buildSectionHeader('GROUP CHATS (${groups.length})', isDark),
-                        ...groups.map((group) {
-                          final isSelected = provider.activeGroup?.id == group.id;
-                          return ListTile(
-                            selected: isSelected,
-                            selectedTileColor: isDark
-                                ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
-                                : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                            onTap: () => provider.setActiveGroup(group),
-                            leading: CircleAvatar(
-                              radius: 22,
-                              backgroundColor: Colors.indigo.shade600,
-                              child: const Icon(Icons.group_rounded, color: Colors.white, size: 20),
-                            ),
-                            title: Text(
-                              group.name,
-                              style: TextStyle(
-                                fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
-                                fontSize: 14,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              '${group.memberIds.length} members • Host: ${group.hostName}',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
-                              ),
-                            ),
-                          );
-                        }),
-                        const Divider(height: 16, indent: 16, endIndent: 16),
-                      ],
-                      // Direct Peers Section
-                      if (knownPeers.isNotEmpty) ...[
-                        _buildSectionHeader('DISCOVERED PEERS (${knownPeers.length})', isDark),
-                        ...knownPeers.map((peer) {
-                          final isSelected = provider.activePeer?.id == peer.id;
-                          return PeerListTile(
-                            peer: peer,
-                            isSelected: isSelected,
-                            onTap: () => provider.setActivePeer(peer),
-                          );
-                        }),
-                      ],
-                    ],
-                  ),
+            child: provider.searchQuery.isNotEmpty
+                ? _buildSearchResults(context, provider, isDark)
+                : _buildChatsList(context, provider, isDark),
           ),
           _buildBottomNodeInfo(context, provider, isDark),
         ],
       ),
+    );
+  }
+
+  Widget _buildSearchBar(BuildContext context, ChatProvider provider, bool isDark) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: TextField(
+        onChanged: (val) => provider.setSearchQuery(val),
+        decoration: InputDecoration(
+          hintText: 'Search chats or messages...',
+          hintStyle: TextStyle(
+            fontSize: 13,
+            color: isDark ? Colors.white38 : Colors.black38,
+          ),
+          prefixIcon: const Icon(Icons.search_rounded, size: 18),
+          suffixIcon: provider.searchQuery.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.clear_rounded, size: 16),
+                  onPressed: () => provider.setSearchQuery(''),
+                )
+              : null,
+          filled: true,
+          fillColor: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.04),
+          contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(18),
+            borderSide: BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChatsList(BuildContext context, ChatProvider provider, bool isDark) {
+    final folder = provider.activeFolder;
+    var peers = provider.database.knownPeers.values.toList();
+    var groups = provider.database.groups;
+
+    if (folder == ChatFolder.personal) {
+      groups = [];
+    } else if (folder == ChatFolder.groups) {
+      peers = [];
+    } else if (folder == ChatFolder.unread) {
+      peers = peers.where((p) => provider.getUnreadCount(p.id) > 0).toList();
+      groups = groups.where((g) => provider.getUnreadCount(g.id) > 0).toList();
+    }
+
+    // Sort peers: pinned first, then online first, then by lastSeen
+    peers.sort((a, b) {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      if (a.isOnline && !b.isOnline) return -1;
+      if (!a.isOnline && b.isOnline) return 1;
+      return b.lastSeen.compareTo(a.lastSeen);
+    });
+
+    // Sort groups: pinned first, then by createdAt
+    groups.sort((a, b) {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      return a.createdAt.compareTo(b.createdAt);
+    });
+
+    if (peers.isEmpty && groups.isEmpty) {
+      if (folder == ChatFolder.unread) {
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.done_all_rounded, size: 40, color: Colors.grey.shade400),
+              const SizedBox(height: 8),
+              const Text('No unread messages', style: TextStyle(color: Colors.grey, fontSize: 13)),
+            ],
+          ),
+        );
+      }
+      return _buildEmptyPeersDiagnostic(context, provider);
+    }
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        // Group Chats Section
+        if (groups.isNotEmpty) ...[
+          _buildSectionHeader('GROUP CHATS (${groups.length})', isDark),
+          ...groups.map((group) {
+            final isSelected = provider.activeGroup?.id == group.id;
+            final unread = provider.getUnreadCount(group.id);
+
+            return ListTile(
+              selected: isSelected,
+              selectedTileColor: isDark
+                  ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
+                  : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              onTap: () => provider.setActiveGroup(group),
+              onLongPress: () => _showChatActionDialog(context, provider, group.id, group.name, group.isPinned, true),
+              leading: CircleAvatar(
+                radius: 22,
+                backgroundColor: Colors.indigo.shade600,
+                child: const Icon(Icons.group_rounded, color: Colors.white, size: 20),
+              ),
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      group.name,
+                      style: TextStyle(
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (group.isPinned)
+                    const Icon(Icons.push_pin_rounded, size: 14, color: TelegramTheme.primaryBlue),
+                ],
+              ),
+              subtitle: Text(
+                '${group.memberIds.length} members • Host: ${group.hostName}${group.backupHostName != null ? ' (Backup: ${group.backupHostName})' : ''}',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: unread > 0
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: TelegramTheme.primaryBlue,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '$unread',
+                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    )
+                  : null,
+            );
+          }),
+          const Divider(height: 16, indent: 16, endIndent: 16),
+        ],
+
+        // Direct Peers Section
+        if (peers.isNotEmpty) ...[
+          _buildSectionHeader('DISCOVERED PEERS (${peers.length})', isDark),
+          ...peers.map((peer) {
+            final isSelected = provider.activePeer?.id == peer.id;
+            return GestureDetector(
+              onSecondaryTap: () => _showChatActionDialog(context, provider, peer.id, peer.name, peer.isPinned, false),
+              onLongPress: () => _showChatActionDialog(context, provider, peer.id, peer.name, peer.isPinned, false),
+              child: PeerListTile(
+                peer: peer,
+                isSelected: isSelected,
+                onTap: () => provider.setActivePeer(peer),
+              ),
+            );
+          }),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildSearchResults(BuildContext context, ChatProvider provider, bool isDark) {
+    final query = provider.searchQuery.toLowerCase();
+    final matchingPeers = provider.database.knownPeers.values.where((p) =>
+        p.name.toLowerCase().contains(query) || (p.username ?? '').toLowerCase().contains(query)).toList();
+    final matchingGroups = provider.database.groups.where((g) =>
+        g.name.toLowerCase().contains(query)).toList();
+    final messageResults = provider.searchResults;
+
+    if (matchingPeers.isEmpty && matchingGroups.isEmpty && messageResults.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.search_off_rounded, size: 48, color: Colors.grey.shade400),
+              const SizedBox(height: 12),
+              Text(
+                'No matches for "$query"',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Try searching with a different keyword or username',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        if (matchingGroups.isNotEmpty || matchingPeers.isNotEmpty) ...[
+          _buildSectionHeader('CHATS & CONTACTS', isDark),
+          ...matchingGroups.map((g) => ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: Colors.indigo.shade600,
+                  child: const Icon(Icons.group_rounded, color: Colors.white, size: 20),
+                ),
+                title: Text(g.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                subtitle: Text('Group • ${g.memberIds.length} members', style: const TextStyle(fontSize: 12)),
+                onTap: () {
+                  provider.setActiveGroup(g);
+                  provider.setSearchQuery('');
+                },
+              )),
+          ...matchingPeers.map((p) => ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: TelegramTheme.primaryBlue,
+                  child: Text(p.name.isNotEmpty ? p.name[0].toUpperCase() : '?',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+                title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                subtitle: Text(p.isOnline ? 'Online' : 'Last seen recently', style: const TextStyle(fontSize: 12)),
+                onTap: () {
+                  provider.setActivePeer(p);
+                  provider.setSearchQuery('');
+                },
+              )),
+          const Divider(height: 16, indent: 16, endIndent: 16),
+        ],
+        if (messageResults.isNotEmpty) ...[
+          _buildSectionHeader('MESSAGES (${messageResults.length} found)', isDark),
+          ...messageResults.map((msg) {
+            final chatName = msg.isGroup
+                ? (provider.database.getGroup(msg.chatId)?.name ?? 'Group')
+                : (provider.database.knownPeers[msg.chatId]?.name ?? msg.senderName);
+
+            return ListTile(
+              leading: CircleAvatar(
+                radius: 18,
+                backgroundColor: isDark ? Colors.white12 : Colors.black12,
+                child: Icon(
+                  msg.type == MessageType.voice
+                      ? Icons.mic_rounded
+                      : (msg.type == MessageType.file ? Icons.attach_file_rounded : Icons.chat_bubble_outline_rounded),
+                  size: 16,
+                  color: TelegramTheme.primaryBlue,
+                ),
+              ),
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(chatName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  ),
+                  Text(
+                    '${msg.timestamp.hour.toString().padLeft(2, '0')}:${msg.timestamp.minute.toString().padLeft(2, '0')}',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                ],
+              ),
+              subtitle: Text(
+                '${msg.senderName}: ${msg.content}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: isDark ? Colors.white70 : Colors.black87,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () {
+                if (msg.isGroup) {
+                  final grp = provider.database.getGroup(msg.chatId);
+                  if (grp != null) provider.setActiveGroup(grp);
+                } else {
+                  final p = provider.database.knownPeers[msg.chatId];
+                  if (p != null) provider.setActivePeer(p);
+                }
+                provider.setSearchQuery('');
+              },
+            );
+          }),
+        ],
+      ],
+    );
+  }
+
+  void _showChatActionDialog(
+    BuildContext context,
+    ChatProvider provider,
+    String id,
+    String name,
+    bool isPinned,
+    bool isGroup,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: Icon(
+                  isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
+                  color: TelegramTheme.primaryBlue,
+                ),
+                title: Text(isPinned ? 'Unpin from Top' : 'Pin to Top'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  provider.togglePin(id, isGroup);
+                },
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -199,10 +464,10 @@ class HomeScreen extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               isUptimeLong
-                  ? 'If you are connected to guest, hotel, or corporate Wi-Fi, Client/AP Isolation is likely active on the router, preventing devices from communicating directly.'
-                  : 'Make sure other devices are running LAN Telegram on the same subnet.',
-              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ? 'We broadcasted UDP beacons to your local subnet, but no other devices replied yet.\n\nEnsure both devices are on the same Wi-Fi/LAN, or use "Remote P2P" to connect across different networks.'
+                  : 'Listening for broadcasts on UDP port ${provider.discoveryService.p2pPort}...',
               textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 16),
             OutlinedButton.icon(
@@ -235,25 +500,55 @@ class HomeScreen extends StatelessWidget {
         bottom: false,
         child: Row(
           children: [
-            Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: TelegramTheme.primaryBlue.withValues(alpha: 0.15),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.send_rounded,
-                color: TelegramTheme.primaryBlue,
-                size: 18,
+            GestureDetector(
+              onTap: () {
+                showDialog(
+                  context: context,
+                  builder: (_) => const AccountDialog(),
+                );
+              },
+              child: Tooltip(
+                message: 'Account Profiles & Login',
+                child: CircleAvatar(
+                  radius: 17,
+                  backgroundColor: TelegramTheme.primaryBlue,
+                  child: Text(
+                    provider.currentAccount?.avatarEmoji ?? '👤',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                ),
               ),
             ),
             const SizedBox(width: 10),
-            const Expanded(
-              child: Text(
-                'LAN Telegram',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
+            Expanded(
+              child: GestureDetector(
+                onTap: () {
+                  showDialog(
+                    context: context,
+                    builder: (_) => const AccountDialog(),
+                  );
+                },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      provider.currentAccount?.displayName ?? provider.deviceName,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      '@${provider.currentAccount?.username ?? 'user'}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: TelegramTheme.primaryBlue,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),

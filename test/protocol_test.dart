@@ -202,4 +202,110 @@ void main() {
     expect(restored.callId, equals('call-12345'));
     expect(restored.callerName, equals('Alice'));
   });
+
+  test('UserAccount serialization, deserialization, and copyWith', () {
+    final now = DateTime.now();
+    final account = UserAccount(
+      id: 'acc-uuid-1',
+      username: 'johndoe',
+      displayName: 'John Doe',
+      bio: 'P2P enthusiast & developer',
+      avatarColorIndex: 2,
+      avatarEmoji: '🚀',
+      createdAt: now,
+      isCurrent: true,
+    );
+
+    final json = account.toJson();
+    expect(json['id'], equals('acc-uuid-1'));
+    expect(json['username'], equals('johndoe'));
+    expect(json['displayName'], equals('John Doe'));
+    expect(json['bio'], equals('P2P enthusiast & developer'));
+    expect(json['avatarColorIndex'], equals(2));
+    expect(json['avatarEmoji'], equals('🚀'));
+    expect(json['isCurrent'], isTrue);
+
+    final restored = UserAccount.fromJson(json);
+    expect(restored.id, equals(account.id));
+    expect(restored.username, equals('johndoe'));
+    expect(restored.displayName, equals('John Doe'));
+    expect(restored.bio, equals('P2P enthusiast & developer'));
+    expect(restored.avatarEmoji, equals('🚀'));
+    expect(restored.isCurrent, isTrue);
+
+    final updated = restored.copyWith(displayName: 'Johnny', bio: 'Updated bio');
+    expect(updated.displayName, equals('Johnny'));
+    expect(updated.bio, equals('Updated bio'));
+    expect(updated.username, equals('johndoe'));
+    expect(updated.id, equals('acc-uuid-1'));
+  });
+
+  test('GroupChat with backup host failover serialization', () {
+    final now = DateTime.now();
+    final group = GroupChat(
+      id: 'grp-failover-123',
+      name: 'Engineering Hub',
+      hostId: 'host-alice',
+      hostName: 'Alice',
+      memberIds: ['host-alice', 'backup-bob', 'charlie'],
+      createdAt: now,
+      backupHostId: 'backup-bob',
+      backupHostName: 'Bob',
+      isPinned: true,
+    );
+
+    final json = group.toJson();
+    expect(json['backupHostId'], equals('backup-bob'));
+    expect(json['backupHostName'], equals('Bob'));
+    expect(json['isPinned'], isTrue);
+
+    final restored = GroupChat.fromJson(json);
+    expect(restored.backupHostId, equals('backup-bob'));
+    expect(restored.backupHostName, equals('Bob'));
+    expect(restored.isPinned, isTrue);
+
+    // Test promotion of backup host to primary host
+    final promoted = restored.copyWith(
+      hostId: restored.backupHostId!,
+      hostName: restored.backupHostName ?? 'Bob',
+      backupHostId: 'charlie',
+      backupHostName: 'Charlie',
+    );
+    expect(promoted.hostId, equals('backup-bob'));
+    expect(promoted.hostName, equals('Bob'));
+    expect(promoted.backupHostId, equals('charlie'));
+    expect(promoted.backupHostName, equals('Charlie'));
+  });
+
+  test('ChatFolder enum values and Peer isPinned attribute', () {
+    expect(ChatFolder.values.length, equals(4));
+    expect(ChatFolder.values, contains(ChatFolder.all));
+    expect(ChatFolder.values, contains(ChatFolder.personal));
+    expect(ChatFolder.values, contains(ChatFolder.groups));
+    expect(ChatFolder.values, contains(ChatFolder.unread));
+
+    final peer = Peer(
+      id: 'peer-pin-1',
+      name: 'Pinned Peer',
+      ip: '192.168.1.10',
+      port: 45455,
+      publicKey: 'key',
+      platform: 'android',
+      lastSeen: DateTime.now(),
+      isPinned: true,
+      username: 'pinned_user',
+    );
+
+    expect(peer.isPinned, isTrue);
+    expect(peer.username, equals('pinned_user'));
+
+    final json = peer.toJson();
+    expect(json['isPinned'], isTrue);
+    expect(json['username'], equals('pinned_user'));
+
+    final restored = Peer.fromJson(json);
+    expect(restored.isPinned, isTrue);
+    expect(restored.username, equals('pinned_user'));
+  });
 }
+

@@ -138,12 +138,18 @@ void main() {
       );
       expect(relaySent, isTrue);
     } finally {
-      await tempDirHost.delete(recursive: true);
-      await tempDirMember.delete(recursive: true);
+      await hostDb.close();
+      await memberDb.close();
       await hostServer.stop();
       await memberServer.stop();
       hostClient.close();
       memberClient.close();
+      try {
+        await tempDirHost.delete(recursive: true);
+      } catch (_) {}
+      try {
+        await tempDirMember.delete(recursive: true);
+      } catch (_) {}
     }
   });
 }

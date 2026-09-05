@@ -47,6 +47,7 @@ void main() {
       expect(aliceSpoofed.hasIdentityConflict, isTrue);
       expect(db.pinnedKeys['alice-device-uuid'], equals('ORIGINAL_GENUINE_PUBLIC_KEY_BASE64'));
     } finally {
+      await db.close();
       await tempDir.delete(recursive: true);
     }
   });

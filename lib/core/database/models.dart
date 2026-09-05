@@ -7,6 +7,82 @@ enum MessageStatus { pending, sent, delivered, read, failed }
 enum TransferDirection { upload, download }
 enum TransferStatus { offered, transferring, paused, completed, failed }
 
+/// Telegram-style chat folders
+enum ChatFolder {
+  all,
+  personal,
+  groups,
+  unread,
+}
+
+/// User account profile for multi-account login & profile customization
+class UserAccount {
+  final String id;
+  final String username;
+  final String displayName;
+  final String bio;
+  final int avatarColorIndex;
+  final String avatarEmoji;
+  final DateTime createdAt;
+  bool isCurrent;
+
+  UserAccount({
+    required this.id,
+    required this.username,
+    required this.displayName,
+    this.bio = '',
+    this.avatarColorIndex = 0,
+    this.avatarEmoji = '👤',
+    DateTime? createdAt,
+    this.isCurrent = false,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'username': username,
+        'displayName': displayName,
+        'bio': bio,
+        'avatarColorIndex': avatarColorIndex,
+        'avatarEmoji': avatarEmoji,
+        'createdAt': createdAt.toIso8601String(),
+        'isCurrent': isCurrent,
+      };
+
+  factory UserAccount.fromJson(Map<String, dynamic> json) => UserAccount(
+        id: json['id'] as String,
+        username: json['username'] as String? ?? 'user',
+        displayName: json['displayName'] as String? ?? 'User',
+        bio: json['bio'] as String? ?? '',
+        avatarColorIndex: json['avatarColorIndex'] as int? ?? 0,
+        avatarEmoji: json['avatarEmoji'] as String? ?? '👤',
+        createdAt: json['createdAt'] != null
+            ? DateTime.parse(json['createdAt'] as String)
+            : DateTime.now(),
+        isCurrent: json['isCurrent'] as bool? ?? false,
+      );
+
+  UserAccount copyWith({
+    String? id,
+    String? username,
+    String? displayName,
+    String? bio,
+    int? avatarColorIndex,
+    String? avatarEmoji,
+    DateTime? createdAt,
+    bool? isCurrent,
+  }) =>
+      UserAccount(
+        id: id ?? this.id,
+        username: username ?? this.username,
+        displayName: displayName ?? this.displayName,
+        bio: bio ?? this.bio,
+        avatarColorIndex: avatarColorIndex ?? this.avatarColorIndex,
+        avatarEmoji: avatarEmoji ?? this.avatarEmoji,
+        createdAt: createdAt ?? this.createdAt,
+        isCurrent: isCurrent ?? this.isCurrent,
+      );
+}
+
 /// Represents a peer discovered on the local network
 class Peer {
   final String id;
@@ -19,6 +95,8 @@ class Peer {
   bool hasIdentityConflict;
   bool isRemote;
   String? remoteTunnelUrl;
+  bool isPinned;
+  String? username;
 
   Peer({
     required this.id,
@@ -31,6 +109,8 @@ class Peer {
     this.hasIdentityConflict = false,
     this.isRemote = false,
     this.remoteTunnelUrl,
+    this.isPinned = false,
+    this.username,
   });
 
   bool get isOnline =>
@@ -54,6 +134,8 @@ class Peer {
         'hasIdentityConflict': hasIdentityConflict,
         'isRemote': isRemote,
         'remoteTunnelUrl': remoteTunnelUrl,
+        'isPinned': isPinned,
+        'username': username,
       };
 
   factory Peer.fromJson(Map<String, dynamic> json) => Peer(
@@ -69,6 +151,8 @@ class Peer {
         hasIdentityConflict: json['hasIdentityConflict'] as bool? ?? false,
         isRemote: json['isRemote'] as bool? ?? false,
         remoteTunnelUrl: json['remoteTunnelUrl'] as String?,
+        isPinned: json['isPinned'] as bool? ?? false,
+        username: json['username'] as String?,
       );
 
   Peer copyWith({
@@ -81,6 +165,8 @@ class Peer {
     bool? hasIdentityConflict,
     bool? isRemote,
     String? remoteTunnelUrl,
+    bool? isPinned,
+    String? username,
   }) {
     return Peer(
       id: id,
@@ -93,6 +179,8 @@ class Peer {
       hasIdentityConflict: hasIdentityConflict ?? this.hasIdentityConflict,
       isRemote: isRemote ?? this.isRemote,
       remoteTunnelUrl: remoteTunnelUrl ?? this.remoteTunnelUrl,
+      isPinned: isPinned ?? this.isPinned,
+      username: username ?? this.username,
     );
   }
 }
@@ -179,22 +267,28 @@ class PeerConnectionLink {
   }
 }
 
-/// Represents a local group chat coordinated via Host-Relay
+/// Represents a local group chat coordinated via Host-Relay with resilient backup failover
 class GroupChat {
   final String id;
   final String name;
   final String hostId;
   final String hostName;
+  final String? backupHostId;
+  final String? backupHostName;
   final List<String> memberIds;
   final DateTime createdAt;
+  final bool isPinned;
 
   GroupChat({
     required this.id,
     required this.name,
     required this.hostId,
     required this.hostName,
+    this.backupHostId,
+    this.backupHostName,
     required this.memberIds,
     required this.createdAt,
+    this.isPinned = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -202,8 +296,11 @@ class GroupChat {
         'name': name,
         'hostId': hostId,
         'hostName': hostName,
+        'backupHostId': backupHostId,
+        'backupHostName': backupHostName,
         'memberIds': memberIds,
         'createdAt': createdAt.toIso8601String(),
+        'isPinned': isPinned,
       };
 
   factory GroupChat.fromJson(Map<String, dynamic> json) => GroupChat(
@@ -211,6 +308,8 @@ class GroupChat {
         name: json['name'] as String,
         hostId: json['hostId'] as String,
         hostName: json['hostName'] as String? ?? 'Host',
+        backupHostId: json['backupHostId'] as String?,
+        backupHostName: json['backupHostName'] as String?,
         memberIds: (json['memberIds'] as List<dynamic>?)
                 ?.map((e) => e.toString())
                 .toList() ??
@@ -218,6 +317,29 @@ class GroupChat {
         createdAt: json['createdAt'] != null
             ? DateTime.parse(json['createdAt'] as String)
             : DateTime.now(),
+        isPinned: json['isPinned'] as bool? ?? false,
+      );
+
+  GroupChat copyWith({
+    String? name,
+    String? hostId,
+    String? hostName,
+    String? backupHostId,
+    String? backupHostName,
+    List<String>? memberIds,
+    DateTime? createdAt,
+    bool? isPinned,
+  }) =>
+      GroupChat(
+        id: id,
+        name: name ?? this.name,
+        hostId: hostId ?? this.hostId,
+        hostName: hostName ?? this.hostName,
+        backupHostId: backupHostId ?? this.backupHostId,
+        backupHostName: backupHostName ?? this.backupHostName,
+        memberIds: memberIds ?? this.memberIds,
+        createdAt: createdAt ?? this.createdAt,
+        isPinned: isPinned ?? this.isPinned,
       );
 }
 

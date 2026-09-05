@@ -110,8 +110,44 @@ class ChatProvider extends ChangeNotifier {
 
   bool get isGroupHostOnline {
     if (_activeGroup == null) return true;
-    if (_activeGroup!.hostId == _deviceId) return true;
-    return database.knownPeers[_activeGroup!.hostId]?.isOnline ?? false;
+    if (_activeGroup!.hostId == _deviceId || _activeGroup!.backupHostId == _deviceId) return true;
+    final hostOnline = database.knownPeers[_activeGroup!.hostId]?.isOnline ?? false;
+    final backupOnline = _activeGroup!.backupHostId != null && (database.knownPeers[_activeGroup!.backupHostId!]?.isOnline ?? false);
+    return hostOnline || backupOnline;
+  }
+
+  // Chat Folders
+  ChatFolder _activeFolder = ChatFolder.all;
+  ChatFolder get activeFolder => _activeFolder;
+  void setFolder(ChatFolder folder) {
+    _activeFolder = folder;
+    notifyListeners();
+  }
+
+  // Quick Search
+  String _searchQuery = '';
+  List<ChatMessage> _searchResults = [];
+  String get searchQuery => _searchQuery;
+  List<ChatMessage> get searchResults => _searchResults;
+
+  Future<void> setSearchQuery(String query) async {
+    _searchQuery = query;
+    if (query.trim().isEmpty) {
+      _searchResults = [];
+    } else {
+      _searchResults = await database.searchMessages(query);
+    }
+    notifyListeners();
+  }
+
+  // Multi-Account
+  UserAccount? get currentAccount => database.currentAccount;
+  List<UserAccount> get accounts => database.accounts;
+
+  int getUnreadCount(String chatId) {
+    return database.messages
+        .where((m) => m.chatId == chatId && m.senderId != _deviceId && m.status != MessageStatus.read)
+        .length;
   }
 
   List<ChatMessage> get activeMessages {
@@ -168,6 +204,26 @@ class ChatProvider extends ChangeNotifier {
     // 2. Initialize Persistent Database
     await database.initialize();
 
+    // Ensure account exists
+    if (database.accounts.isEmpty) {
+      final initialAccount = UserAccount(
+        id: _deviceId,
+        username: 'user_${_deviceId.length >= 4 ? _deviceId.substring(0, 4) : 'me'}',
+        displayName: _deviceName,
+        bio: 'Hey there! Using ozo-app',
+        avatarColorIndex: 0,
+        avatarEmoji: '👤',
+        isCurrent: true,
+      );
+      await database.saveAccount(initialAccount);
+    } else {
+      final active = database.currentAccount;
+      if (active != null) {
+        _deviceId = active.id;
+        _deviceName = active.displayName;
+      }
+    }
+
     // 3. Start Embedded P2P Server
     server = P2pServer(
       requestedPort: customPort ?? AppConstants.defaultP2pPort,
@@ -198,6 +254,7 @@ class ChatProvider extends ChangeNotifier {
     server.onTyping = _handleTyping;
     server.onGroupInvite = _handleIncomingGroupInvite;
     server.onGroupMessage = _handleIncomingGroupMessage;
+    server.onGroupMigrated = _handleGroupMigrated;
     server.onReactionReceived = _handleIncomingReaction;
     server.onMessageDeleted = _handleIncomingMessageDeleted;
     server.onCallSignaling = _handleIncomingCallSignaling;
@@ -278,11 +335,21 @@ class ChatProvider extends ChangeNotifier {
     required List<String> memberIds,
   }) async {
     final allMembers = {...memberIds, _deviceId}.toList();
+    final nonHostMembers = memberIds.where((id) => id != _deviceId).toList();
+    String? backupId;
+    String? backupName;
+    if (nonHostMembers.isNotEmpty) {
+      backupId = nonHostMembers.first;
+      backupName = database.knownPeers[backupId]?.name ?? 'Backup Host';
+    }
+
     final group = GroupChat(
       id: _uuid.v4(),
       name: name,
       hostId: _deviceId,
       hostName: _deviceName,
+      backupHostId: backupId,
+      backupHostName: backupName,
       memberIds: allMembers,
       createdAt: DateTime.now(),
     );
@@ -307,7 +374,7 @@ class ChatProvider extends ChangeNotifier {
 
     if (_activeGroup != null) {
       final group = _activeGroup!;
-      if (!isGroupHostOnline) return; // Read-only if host is disconnected
+      if (!isGroupHostOnline) return; // Read-only if host & backup are disconnected
 
       final messageId = _uuid.v4();
       final msg = ChatMessage(
@@ -339,8 +406,44 @@ class ChatProvider extends ChangeNotifier {
       } else {
         // I am member: send to host
         final hostPeer = database.knownPeers[group.hostId];
+        bool sent = false;
         if (hostPeer != null && hostPeer.isOnline) {
-          client.sendGroupMessage(hostPeer: hostPeer, group: group, message: msg);
+          sent = await client.sendGroupMessage(hostPeer: hostPeer, group: group, message: msg);
+        }
+
+        if (!sent) {
+          // Host unreachable! Check failover:
+          if (group.backupHostId == _deviceId) {
+            // I am the backup host! Step up as the new Host
+            final remainingMembers = group.memberIds.where((id) => id != _deviceId && id != group.hostId).toList();
+            final nextBackupId = remainingMembers.isNotEmpty ? remainingMembers.first : null;
+            final nextBackupName = nextBackupId != null ? database.knownPeers[nextBackupId]?.name : null;
+
+            final promoted = group.copyWith(
+              hostId: _deviceId,
+              hostName: _deviceName,
+              backupHostId: nextBackupId,
+              backupHostName: nextBackupName,
+            );
+            await database.saveGroup(promoted);
+            _activeGroup = promoted;
+
+            // Notify all members about migration and relay message
+            for (final mId in promoted.memberIds) {
+              if (mId == _deviceId) continue;
+              final p = database.knownPeers[mId];
+              if (p != null && p.isOnline) {
+                await client.sendGroupMigration(memberPeer: p, group: promoted);
+                await client.relayGroupMessage(memberPeer: p, group: promoted, message: msg);
+              }
+            }
+          } else if (group.backupHostId != null) {
+            // Send to backup host
+            final backupPeer = database.knownPeers[group.backupHostId!];
+            if (backupPeer != null && backupPeer.isOnline) {
+              await client.sendGroupMessage(hostPeer: backupPeer, group: group, message: msg);
+            }
+          }
         }
       }
       return;
@@ -745,6 +848,20 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  void _handleGroupMigrated(
+    String groupId,
+    String newHostId,
+    String newHostName,
+    String? newBackupHostId,
+    String? newBackupHostName,
+  ) {
+    database.updateGroupHost(groupId, newHostId, newHostName, newBackupHostId, newBackupHostName);
+    if (_activeGroup?.id == groupId) {
+      _activeGroup = database.getGroup(groupId);
+    }
+    notifyListeners();
+  }
+
   void _handleDeliveryReceipt(String messageId, MessageStatus status) {
     database.updateMessageStatus(messageId, status);
     notifyListeners();
@@ -1001,6 +1118,116 @@ class ChatProvider extends ChangeNotifier {
         }
         break;
     }
+  }
+
+  // --- Chat Pinning ---
+  Future<void> togglePin(String id, bool isGroup) async {
+    if (isGroup) {
+      await database.toggleGroupPin(id);
+      if (_activeGroup?.id == id) {
+        _activeGroup = database.getGroup(id);
+      }
+    } else {
+      await database.togglePeerPin(id);
+      if (_activePeer?.id == id) {
+        _activePeer = database.knownPeers[id];
+      }
+    }
+    notifyListeners();
+  }
+
+  // --- Multi-Account Profile Management ---
+  Future<void> createAccount({
+    required String username,
+    required String displayName,
+    String bio = '',
+    int avatarColorIndex = 0,
+    String avatarEmoji = '👤',
+  }) async {
+    final account = UserAccount(
+      id: _uuid.v4(),
+      username: username.replaceAll('@', '').trim(),
+      displayName: displayName.trim(),
+      bio: bio.trim(),
+      avatarColorIndex: avatarColorIndex,
+      avatarEmoji: avatarEmoji,
+      isCurrent: true,
+    );
+    await database.saveAccount(account);
+    _deviceId = account.id;
+    _deviceName = account.displayName;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('lan_tg_device_id', _deviceId);
+    await prefs.setString('lan_tg_device_name', _deviceName);
+
+    if (_isInitialized) {
+      discoveryService.updateIdentity(deviceId: _deviceId, deviceName: _deviceName);
+    }
+    _activePeer = null;
+    _activeGroup = null;
+    notifyListeners();
+  }
+
+  Future<void> switchAccount(String accountId) async {
+    await database.switchAccount(accountId);
+    final active = database.currentAccount;
+    if (active != null) {
+      _deviceId = active.id;
+      _deviceName = active.displayName;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('lan_tg_device_id', _deviceId);
+      await prefs.setString('lan_tg_device_name', _deviceName);
+
+      if (_isInitialized) {
+        discoveryService.updateIdentity(deviceId: _deviceId, deviceName: _deviceName);
+      }
+      _activePeer = null;
+      _activeGroup = null;
+    }
+    notifyListeners();
+  }
+
+  Future<void> updateProfile({
+    String? displayName,
+    String? username,
+    String? bio,
+    int? avatarColorIndex,
+    String? avatarEmoji,
+  }) async {
+    final active = database.currentAccount;
+    if (active == null) return;
+    final updated = active.copyWith(
+      displayName: displayName,
+      username: username?.replaceAll('@', ''),
+      bio: bio,
+      avatarColorIndex: avatarColorIndex,
+      avatarEmoji: avatarEmoji,
+    );
+    await database.saveAccount(updated);
+    if (displayName != null && displayName.isNotEmpty) {
+      _deviceName = displayName;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('lan_tg_device_name', _deviceName);
+      if (_isInitialized) {
+        discoveryService.updateIdentity(deviceName: _deviceName);
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<void> deleteAccount(String accountId) async {
+    await database.deleteAccount(accountId);
+    final active = database.currentAccount;
+    if (active != null) {
+      _deviceId = active.id;
+      _deviceName = active.displayName;
+      if (_isInitialized) {
+        discoveryService.updateIdentity(deviceId: _deviceId, deviceName: _deviceName);
+      }
+    }
+    notifyListeners();
   }
 
   @override

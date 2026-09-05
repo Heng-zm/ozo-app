@@ -364,6 +364,30 @@ class P2pClient {
     }
   }
 
+  /// Broadcasts a group migration notification to a member
+  Future<bool> sendGroupMigration({
+    required Peer memberPeer,
+    required GroupChat group,
+  }) async {
+    final socket = await getOrConnect(memberPeer);
+    if (socket == null) return false;
+    try {
+      socket.add(jsonEncode({
+        'type': 'GROUP_MIGRATED',
+        'groupId': group.id,
+        'newHostId': group.hostId,
+        'newHostName': group.hostName,
+        'newBackupHostId': group.backupHostId,
+        'newBackupHostName': group.backupHostName,
+        'senderId': deviceId,
+      }));
+      return true;
+    } catch (_) {
+      _sockets.remove(memberPeer.id);
+      return false;
+    }
+  }
+
   void close() {
     for (final s in _sockets.values) {
       try {

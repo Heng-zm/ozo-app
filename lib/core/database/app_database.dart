@@ -1,30 +1,46 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart' as sqflite;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'models.dart';
 
-/// Persistent local storage with TOFU key pinning, groups, and message history
+/// Persistent local storage backed by high-performance SQLite with WAL mode,
+/// Full-Text Search (FTS), TOFU key pinning, groups failover, and multi-account support.
 class AppDatabase {
   static final AppDatabase _instance = AppDatabase._internal();
   factory AppDatabase() => _instance;
   AppDatabase._internal();
 
-  File? _messagesFile;
-  File? _peersFile;
-  File? _pinnedKeysFile;
-  File? _groupsFile;
+  sqflite.Database? _db;
 
+  // In-memory hot cache for instant UI rendering & zero latency
   final List<ChatMessage> _messages = [];
   final Map<String, Peer> _knownPeers = {};
   final Map<String, String> _pinnedKeys = {}; // deviceId -> originalPublicKey
   final Map<String, GroupChat> _groups = {};
+  final List<UserAccount> _accounts = [];
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
   Map<String, Peer> get knownPeers => Map.unmodifiable(_knownPeers);
   Map<String, String> get pinnedKeys => Map.unmodifiable(_pinnedKeys);
   List<GroupChat> get groups => _groups.values.toList()
-    ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    ..sort((a, b) {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      return b.createdAt.compareTo(a.createdAt);
+    });
+  List<UserAccount> get accounts => List.unmodifiable(_accounts);
+
+  UserAccount? get currentAccount {
+    try {
+      return _accounts.firstWhere((a) => a.isCurrent);
+    } catch (_) {
+      return _accounts.isNotEmpty ? _accounts.first : null;
+    }
+  }
 
   Future<void> initialize({Directory? customDirectory}) async {
     Directory dbDir;
@@ -42,123 +58,478 @@ class AppDatabase {
       await dbDir.create(recursive: true);
     }
 
-    _messagesFile = File(p.join(dbDir.path, 'messages.json'));
-    _peersFile = File(p.join(dbDir.path, 'peers.json'));
-    _pinnedKeysFile = File(p.join(dbDir.path, 'pinned_keys.json'));
-    _groupsFile = File(p.join(dbDir.path, 'groups.json'));
+    // Initialize FFI on desktop platforms (Windows, Linux, macOS)
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      sqfliteFfiInit();
+      sqflite.databaseFactory = databaseFactoryFfi;
+    }
 
-    await _loadPinnedKeys();
-    await _loadPeers();
-    await _loadGroups();
-    await _loadMessages();
-  }
+    final dbPath = p.join(dbDir.path, 'lan_telegram.db');
+    _db = await sqflite.openDatabase(
+      dbPath,
+      version: 1,
+      onCreate: _onCreate,
+    );
 
-  Future<void> _loadPinnedKeys() async {
+    // Enable WAL mode for high concurrency read/write
     try {
-      if (await _pinnedKeysFile!.exists()) {
-        final content = await _pinnedKeysFile!.readAsString();
-        if (content.isNotEmpty) {
-          final Map<String, dynamic> jsonMap = jsonDecode(content);
-          jsonMap.forEach((key, value) {
-            _pinnedKeys[key] = value.toString();
-          });
-        }
-      }
+      await _db!.execute('PRAGMA journal_mode=WAL;');
+      await _db!.execute('PRAGMA synchronous=NORMAL;');
     } catch (_) {}
+
+    // Load in-memory caches from SQLite
+    await _loadAccountsFromDb();
+    await _loadPinnedKeysFromDb();
+    await _loadPeersFromDb();
+    await _loadGroupsFromDb();
+    await _loadMessagesFromDb();
+
+    // Check if legacy JSON files exist and import them if SQLite is fresh
+    await _migrateLegacyJsonIfPresent(dbDir);
   }
 
-  Future<void> _loadGroups() async {
+  Future<void> _onCreate(sqflite.Database db, int version) async {
+    // Accounts Table
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS accounts (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        bio TEXT,
+        avatar_color_index INTEGER DEFAULT 0,
+        avatar_emoji TEXT DEFAULT '👤',
+        created_at INTEGER NOT NULL,
+        is_current INTEGER DEFAULT 0
+      );
+    ''');
+
+    // Peers Table
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS peers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        ip TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        public_key TEXT,
+        platform TEXT,
+        last_seen INTEGER NOT NULL,
+        is_remote INTEGER DEFAULT 0,
+        remote_tunnel_url TEXT,
+        is_pinned INTEGER DEFAULT 0,
+        username TEXT
+      );
+    ''');
+
+    // TOFU Pinned Keys Table
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pinned_keys (
+        device_id TEXT PRIMARY KEY,
+        public_key TEXT NOT NULL
+      );
+    ''');
+
+    // Groups Table
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        host_id TEXT NOT NULL,
+        host_name TEXT NOT NULL,
+        backup_host_id TEXT,
+        backup_host_name TEXT,
+        member_ids_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        is_pinned INTEGER DEFAULT 0
+      );
+    ''');
+
+    // Messages Table with indexes
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        sender_name TEXT NOT NULL,
+        recipient_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        type TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        file_metadata_json TEXT,
+        is_group INTEGER DEFAULT 0,
+        group_id TEXT,
+        voice_duration REAL,
+        waveform_json TEXT,
+        reply_to_id TEXT,
+        reply_to_text TEXT,
+        reply_to_sender_name TEXT,
+        reactions_json TEXT
+      );
+    ''');
+
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_msg_chat_time ON messages(chat_id, timestamp DESC);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_msg_content ON messages(content);');
+
+    // Full-Text Search (FTS5) table
     try {
-      if (await _groupsFile!.exists()) {
-        final content = await _groupsFile!.readAsString();
-        if (content.isNotEmpty) {
-          final List<dynamic> jsonList = jsonDecode(content);
-          for (final item in jsonList) {
-            final group = GroupChat.fromJson(item as Map<String, dynamic>);
-            _groups[group.id] = group;
-          }
-        }
-      }
-    } catch (_) {}
+      await db.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+          id UNINDEXED,
+          chat_id UNINDEXED,
+          content
+        );
+      ''');
+    } catch (_) {
+      // If FTS5 is unsupported on older platforms, fallback cleanly to standard indexed LIKE query
+    }
   }
 
-  Future<void> _loadPeers() async {
-    try {
-      if (await _peersFile!.exists()) {
-        final content = await _peersFile!.readAsString();
-        if (content.isNotEmpty) {
-          final List<dynamic> jsonList = jsonDecode(content);
-          for (final item in jsonList) {
-            final peer = Peer.fromJson(item as Map<String, dynamic>);
-            // Check against pinned key
-            if (_pinnedKeys.containsKey(peer.id) &&
-                _pinnedKeys[peer.id] != peer.publicKey &&
-                peer.publicKey.isNotEmpty) {
-              peer.hasIdentityConflict = true;
-            }
-            _knownPeers[peer.id] = peer;
-          }
-        }
-      }
-    } catch (_) {}
+  // ---------------------------------------------------------------------------
+  // Account Management
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadAccountsFromDb() async {
+    if (_db == null) return;
+    final rows = await _db!.query('accounts', orderBy: 'created_at ASC');
+    _accounts.clear();
+    for (final row in rows) {
+      _accounts.add(UserAccount(
+        id: row['id'] as String,
+        username: row['username'] as String,
+        displayName: row['display_name'] as String,
+        bio: row['bio'] as String? ?? '',
+        avatarColorIndex: row['avatar_color_index'] as int? ?? 0,
+        avatarEmoji: row['avatar_emoji'] as String? ?? '👤',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
+        isCurrent: (row['is_current'] as int? ?? 0) == 1,
+      ));
+    }
   }
 
-  Future<void> _loadMessages() async {
-    try {
-      if (await _messagesFile!.exists()) {
-        final content = await _messagesFile!.readAsString();
-        if (content.isNotEmpty) {
-          final List<dynamic> jsonList = jsonDecode(content);
-          _messages.clear();
-          for (final item in jsonList) {
-            _messages.add(ChatMessage.fromJson(item as Map<String, dynamic>));
-          }
-        }
+  Future<void> saveAccount(UserAccount account) async {
+    if (_db == null) return;
+
+    if (account.isCurrent) {
+      await _db!.update('accounts', {'is_current': 0});
+      for (final a in _accounts) {
+        a.isCurrent = false;
       }
-    } catch (_) {}
+    }
+
+    await _db!.insert(
+      'accounts',
+      {
+        'id': account.id,
+        'username': account.username,
+        'display_name': account.displayName,
+        'bio': account.bio,
+        'avatar_color_index': account.avatarColorIndex,
+        'avatar_emoji': account.avatarEmoji,
+        'created_at': account.createdAt.millisecondsSinceEpoch,
+        'is_current': account.isCurrent ? 1 : 0,
+      },
+      conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
+    );
+
+    final idx = _accounts.indexWhere((a) => a.id == account.id);
+    if (idx >= 0) {
+      _accounts[idx] = account;
+    } else {
+      _accounts.add(account);
+    }
   }
 
-  /// Saves or updates peer while enforcing Trust-On-First-Use (TOFU) key pinning
+  Future<void> switchAccount(String accountId) async {
+    if (_db == null) return;
+    await _db!.update('accounts', {'is_current': 0});
+    await _db!.update('accounts', {'is_current': 1}, where: 'id = ?', whereArgs: [accountId]);
+    for (final a in _accounts) {
+      a.isCurrent = (a.id == accountId);
+    }
+  }
+
+  Future<void> deleteAccount(String accountId) async {
+    if (_db == null) return;
+    await _db!.delete('accounts', where: 'id = ?', whereArgs: [accountId]);
+    _accounts.removeWhere((a) => a.id == accountId);
+    if (_accounts.isNotEmpty && currentAccount == null) {
+      await switchAccount(_accounts.first.id);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pinned Keys (TOFU)
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadPinnedKeysFromDb() async {
+    if (_db == null) return;
+    final rows = await _db!.query('pinned_keys');
+    _pinnedKeys.clear();
+    for (final row in rows) {
+      _pinnedKeys[row['device_id'] as String] = row['public_key'] as String;
+    }
+  }
+
+  Future<void> _persistPinnedKey(String deviceId, String publicKey) async {
+    if (_db == null) return;
+    await _db!.insert(
+      'pinned_keys',
+      {'device_id': deviceId, 'public_key': publicKey},
+      conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Peers
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadPeersFromDb() async {
+    if (_db == null) return;
+    final rows = await _db!.query('peers');
+    _knownPeers.clear();
+    for (final row in rows) {
+      final peer = Peer(
+        id: row['id'] as String,
+        name: row['name'] as String,
+        ip: row['ip'] as String,
+        port: row['port'] as int,
+        publicKey: row['public_key'] as String? ?? '',
+        platform: row['platform'] as String? ?? 'unknown',
+        lastSeen: DateTime.fromMillisecondsSinceEpoch(row['last_seen'] as int),
+        isRemote: (row['is_remote'] as int? ?? 0) == 1,
+        remoteTunnelUrl: row['remote_tunnel_url'] as String?,
+        isPinned: (row['is_pinned'] as int? ?? 0) == 1,
+        username: row['username'] as String?,
+      );
+
+      if (_pinnedKeys.containsKey(peer.id) &&
+          _pinnedKeys[peer.id] != peer.publicKey &&
+          peer.publicKey.isNotEmpty) {
+        peer.hasIdentityConflict = true;
+      }
+      _knownPeers[peer.id] = peer;
+    }
+  }
+
   Future<void> savePeer(Peer peer) async {
     if (peer.publicKey.isNotEmpty) {
       if (!_pinnedKeys.containsKey(peer.id)) {
-        // First contact: Pin this public key
         _pinnedKeys[peer.id] = peer.publicKey;
-        await _persistPinnedKeys();
+        await _persistPinnedKey(peer.id, peer.publicKey);
       } else if (_pinnedKeys[peer.id] != peer.publicKey) {
-        // Conflict detected! The device public key changed.
         peer.hasIdentityConflict = true;
       }
     }
 
     _knownPeers[peer.id] = peer;
-    await _persistPeers();
+    if (_db != null) {
+      await _db!.insert(
+        'peers',
+        {
+          'id': peer.id,
+          'name': peer.name,
+          'ip': peer.ip,
+          'port': peer.port,
+          'public_key': peer.publicKey,
+          'platform': peer.platform,
+          'last_seen': peer.lastSeen.millisecondsSinceEpoch,
+          'is_remote': peer.isRemote ? 1 : 0,
+          'remote_tunnel_url': peer.remoteTunnelUrl,
+          'is_pinned': peer.isPinned ? 1 : 0,
+          'username': peer.username,
+        },
+        conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
+      );
+    }
   }
 
   Future<void> upsertPeer(Peer peer) => savePeer(peer);
 
+  Future<void> togglePeerPin(String peerId) async {
+    final peer = _knownPeers[peerId];
+    if (peer == null) return;
+    peer.isPinned = !peer.isPinned;
+    if (_db != null) {
+      await _db!.update(
+        'peers',
+        {'is_pinned': peer.isPinned ? 1 : 0},
+        where: 'id = ?',
+        whereArgs: [peerId],
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Groups & Resilient Failover
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadGroupsFromDb() async {
+    if (_db == null) return;
+    final rows = await _db!.query('groups');
+    _groups.clear();
+    for (final row in rows) {
+      final members = (jsonDecode(row['member_ids_json'] as String) as List<dynamic>)
+          .map((e) => e.toString())
+          .toList();
+      final group = GroupChat(
+        id: row['id'] as String,
+        name: row['name'] as String,
+        hostId: row['host_id'] as String,
+        hostName: row['host_name'] as String,
+        backupHostId: row['backup_host_id'] as String?,
+        backupHostName: row['backup_host_name'] as String?,
+        memberIds: members,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
+        isPinned: (row['is_pinned'] as int? ?? 0) == 1,
+      );
+      _groups[group.id] = group;
+    }
+  }
+
   Future<void> saveGroup(GroupChat group) async {
     _groups[group.id] = group;
-    await _persistGroups();
+    if (_db != null) {
+      await _db!.insert(
+        'groups',
+        {
+          'id': group.id,
+          'name': group.name,
+          'host_id': group.hostId,
+          'host_name': group.hostName,
+          'backup_host_id': group.backupHostId,
+          'backup_host_name': group.backupHostName,
+          'member_ids_json': jsonEncode(group.memberIds),
+          'created_at': group.createdAt.millisecondsSinceEpoch,
+          'is_pinned': group.isPinned ? 1 : 0,
+        },
+        conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
+      );
+    }
   }
 
   GroupChat? getGroup(String id) => _groups[id];
 
-  Future<void> _persistPinnedKeys() async {
-    if (_pinnedKeysFile == null) return;
-    await _pinnedKeysFile!.writeAsString(jsonEncode(_pinnedKeys));
+  Future<void> updateGroupHost(
+    String groupId,
+    String newHostId,
+    String newHostName,
+    String? newBackupHostId,
+    String? newBackupHostName,
+  ) async {
+    final existing = _groups[groupId];
+    if (existing == null) return;
+    final updated = existing.copyWith(
+      hostId: newHostId,
+      hostName: newHostName,
+      backupHostId: newBackupHostId,
+      backupHostName: newBackupHostName,
+    );
+    await saveGroup(updated);
   }
 
-  Future<void> _persistGroups() async {
-    if (_groupsFile == null) return;
-    final jsonList = _groups.values.map((g) => g.toJson()).toList();
-    await _groupsFile!.writeAsString(jsonEncode(jsonList));
+  Future<void> toggleGroupPin(String groupId) async {
+    final group = _groups[groupId];
+    if (group == null) return;
+    final updated = group.copyWith(isPinned: !group.isPinned);
+    await saveGroup(updated);
   }
 
-  Future<void> _persistPeers() async {
-    if (_peersFile == null) return;
-    final jsonList = _knownPeers.values.map((p) => p.toJson()).toList();
-    await _peersFile!.writeAsString(jsonEncode(jsonList));
+  // ---------------------------------------------------------------------------
+  // Messages & Full-Text Search (FTS)
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadMessagesFromDb() async {
+    if (_db == null) return;
+    final rows = await _db!.query('messages', orderBy: 'timestamp ASC');
+    _messages.clear();
+    for (final row in rows) {
+      _messages.add(_rowToChatMessage(row));
+    }
+  }
+
+  ChatMessage _rowToChatMessage(Map<String, dynamic> row) {
+    Map<String, List<String>> reactions = {};
+    if (row['reactions_json'] != null) {
+      try {
+        final decoded = jsonDecode(row['reactions_json'] as String) as Map<String, dynamic>;
+        decoded.forEach((key, val) {
+          if (val is List) {
+            reactions[key] = val.map((e) => e.toString()).toList();
+          }
+        });
+      } catch (_) {}
+    }
+
+    FileMetadata? fileMetadata;
+    if (row['file_metadata_json'] != null) {
+      try {
+        fileMetadata = FileMetadata.fromJson(
+            jsonDecode(row['file_metadata_json'] as String) as Map<String, dynamic>);
+      } catch (_) {}
+    }
+
+    List<double>? waveform;
+    if (row['waveform_json'] != null) {
+      try {
+        waveform = (jsonDecode(row['waveform_json'] as String) as List<dynamic>)
+            .map((e) => (e as num).toDouble())
+            .toList();
+      } catch (_) {}
+    }
+
+    return ChatMessage(
+      id: row['id'] as String,
+      chatId: row['chat_id'] as String,
+      senderId: row['sender_id'] as String,
+      senderName: row['sender_name'] as String,
+      recipientId: row['recipient_id'] as String,
+      content: row['content'] as String,
+      type: MessageType.values.firstWhere(
+        (e) => e.name == row['type'],
+        orElse: () => MessageType.text,
+      ),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(row['timestamp'] as int),
+      status: MessageStatus.values.firstWhere(
+        (e) => e.name == row['status'],
+        orElse: () => MessageStatus.delivered,
+      ),
+      fileMetadata: fileMetadata,
+      isGroup: (row['is_group'] as int? ?? 0) == 1,
+      groupId: row['group_id'] as String?,
+      voiceDurationSeconds: (row['voice_duration'] as num?)?.toDouble(),
+      waveformAmplitudes: waveform,
+      replyToId: row['reply_to_id'] as String?,
+      replyToText: row['reply_to_text'] as String?,
+      replyToSenderName: row['reply_to_sender_name'] as String?,
+      reactions: reactions,
+    );
+  }
+
+  Map<String, dynamic> _chatMessageToRow(ChatMessage message) {
+    return {
+      'id': message.id,
+      'chat_id': message.chatId,
+      'sender_id': message.senderId,
+      'sender_name': message.senderName,
+      'recipient_id': message.recipientId,
+      'content': message.content,
+      'type': message.type.name,
+      'timestamp': message.timestamp.millisecondsSinceEpoch,
+      'status': message.status.name,
+      'file_metadata_json':
+          message.fileMetadata != null ? jsonEncode(message.fileMetadata!.toJson()) : null,
+      'is_group': message.isGroup ? 1 : 0,
+      'group_id': message.groupId,
+      'voice_duration': message.voiceDurationSeconds,
+      'waveform_json': message.waveformAmplitudes != null
+          ? jsonEncode(message.waveformAmplitudes)
+          : null,
+      'reply_to_id': message.replyToId,
+      'reply_to_text': message.replyToText,
+      'reply_to_sender_name': message.replyToSenderName,
+      'reactions_json':
+          message.reactions.isNotEmpty ? jsonEncode(message.reactions) : null,
+    };
   }
 
   Future<void> saveMessage(ChatMessage message) async {
@@ -168,50 +539,207 @@ class AppDatabase {
     } else {
       _messages.add(message);
     }
-    await _persistMessages();
+
+    if (_db != null) {
+      final row = _chatMessageToRow(message);
+      await _db!.insert('messages', row, conflictAlgorithm: sqflite.ConflictAlgorithm.replace);
+      try {
+        await _db!.execute(
+          'INSERT OR REPLACE INTO messages_fts (id, chat_id, content) VALUES (?, ?, ?);',
+          [message.id, message.chatId, message.content],
+        );
+      } catch (_) {}
+    }
   }
 
   Future<void> updateMessageStatus(String messageId, MessageStatus status) async {
     final index = _messages.indexWhere((m) => m.id == messageId);
     if (index >= 0) {
-      _messages[index].status = status;
-      await _persistMessages();
+      _messages[index] = _messages[index].copyWith(status: status);
+    }
+
+    if (_db != null) {
+      await _db!.update(
+        'messages',
+        {'status': status.name},
+        where: 'id = ?',
+        whereArgs: [messageId],
+      );
     }
   }
 
   Future<void> markFileCompleted(String transferId, String localPath) async {
-    for (final msg in _messages) {
+    for (int i = 0; i < _messages.length; i++) {
+      final msg = _messages[i];
       if (msg.fileMetadata?.transferId == transferId) {
         msg.fileMetadata?.localPath = localPath;
         msg.fileMetadata?.isCompleted = true;
         msg.status = MessageStatus.delivered;
+        await saveMessage(msg);
       }
     }
-    await _persistMessages();
-  }
-
-  Future<void> _persistMessages() async {
-    if (_messagesFile == null) return;
-    final jsonList = _messages.map((m) => m.toJson()).toList();
-    await _messagesFile!.writeAsString(jsonEncode(jsonList));
   }
 
   Future<void> deleteMessage(String messageId) async {
     _messages.removeWhere((m) => m.id == messageId);
-    await _persistMessages();
+    if (_db != null) {
+      await _db!.delete('messages', where: 'id = ?', whereArgs: [messageId]);
+      try {
+        await _db!.delete('messages_fts', where: 'id = ?', whereArgs: [messageId]);
+      } catch (_) {}
+    }
   }
 
   Future<void> updateMessageReactions(String messageId, Map<String, List<String>> reactions) async {
     final index = _messages.indexWhere((m) => m.id == messageId);
     if (index >= 0) {
-      final old = _messages[index];
-      _messages[index] = old.copyWith(reactions: reactions);
-      await _persistMessages();
+      final updated = _messages[index].copyWith(reactions: reactions);
+      _messages[index] = updated;
+      if (_db != null) {
+        await _db!.update(
+          'messages',
+          {'reactions_json': jsonEncode(reactions)},
+          where: 'id = ?',
+          whereArgs: [messageId],
+        );
+      }
     }
   }
 
   List<ChatMessage> getMessagesForChat(String chatId) {
     return _messages.where((m) => m.chatId == chatId).toList()
       ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+  }
+
+  /// Paginated message loading for large chats (e.g. 100,000+ messages)
+  Future<List<ChatMessage>> getMessagesForChatPaged(
+    String chatId, {
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    if (_db == null) {
+      final all = getMessagesForChat(chatId);
+      final start = offset.clamp(0, all.length);
+      final end = (start + limit).clamp(start, all.length);
+      return all.sublist(start, end);
+    }
+
+    final rows = await _db!.query(
+      'messages',
+      where: 'chat_id = ?',
+      whereArgs: [chatId],
+      orderBy: 'timestamp DESC',
+      limit: limit,
+      offset: offset,
+    );
+
+    return rows.map((r) => _rowToChatMessage(r)).toList().reversed.toList();
+  }
+
+  /// Instant Full-Text Search across all conversation histories
+  Future<List<ChatMessage>> searchMessages(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return [];
+
+    if (_db == null) {
+      final q = trimmed.toLowerCase();
+      return _messages
+          .where((m) => m.content.toLowerCase().contains(q))
+          .take(50)
+          .toList();
+    }
+
+    try {
+      // First try FTS5 virtual table
+      final ftsRows = await _db!.rawQuery(
+        '''
+        SELECT m.* FROM messages m
+        JOIN messages_fts fts ON m.id = fts.id
+        WHERE messages_fts MATCH ?
+        ORDER BY m.timestamp DESC LIMIT 50;
+        ''',
+        ['*$trimmed*'],
+      );
+      if (ftsRows.isNotEmpty) {
+        return ftsRows.map((r) => _rowToChatMessage(r)).toList();
+      }
+    } catch (_) {
+      // Fallback to indexed LIKE query
+    }
+
+    final rows = await _db!.query(
+      'messages',
+      where: 'content LIKE ?',
+      whereArgs: ['%$trimmed%'],
+      orderBy: 'timestamp DESC',
+      limit: 50,
+    );
+    return rows.map((r) => _rowToChatMessage(r)).toList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Migration from Legacy JSON
+  // ---------------------------------------------------------------------------
+
+  Future<void> _migrateLegacyJsonIfPresent(Directory dbDir) async {
+    try {
+      final messagesFile = File(p.join(dbDir.path, 'messages.json'));
+      final peersFile = File(p.join(dbDir.path, 'peers.json'));
+      final pinnedKeysFile = File(p.join(dbDir.path, 'pinned_keys.json'));
+      final groupsFile = File(p.join(dbDir.path, 'groups.json'));
+
+      // If database has 0 messages and legacy messages.json exists, import it
+      if (_messages.isEmpty && await messagesFile.exists()) {
+        final content = await messagesFile.readAsString();
+        if (content.isNotEmpty) {
+          final List<dynamic> list = jsonDecode(content);
+          for (final item in list) {
+            final msg = ChatMessage.fromJson(item as Map<String, dynamic>);
+            await saveMessage(msg);
+          }
+        }
+      }
+
+      if (_knownPeers.isEmpty && await peersFile.exists()) {
+        final content = await peersFile.readAsString();
+        if (content.isNotEmpty) {
+          final List<dynamic> list = jsonDecode(content);
+          for (final item in list) {
+            final peer = Peer.fromJson(item as Map<String, dynamic>);
+            await savePeer(peer);
+          }
+        }
+      }
+
+      if (_groups.isEmpty && await groupsFile.exists()) {
+        final content = await groupsFile.readAsString();
+        if (content.isNotEmpty) {
+          final List<dynamic> list = jsonDecode(content);
+          for (final item in list) {
+            final group = GroupChat.fromJson(item as Map<String, dynamic>);
+            await saveGroup(group);
+          }
+        }
+      }
+
+      if (_pinnedKeys.isEmpty && await pinnedKeysFile.exists()) {
+        final content = await pinnedKeysFile.readAsString();
+        if (content.isNotEmpty) {
+          final Map<String, dynamic> map = jsonDecode(content);
+          map.forEach((k, v) async {
+            await _persistPinnedKey(k, v.toString());
+            _pinnedKeys[k] = v.toString();
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// Closes database connection and releases file locks
+  Future<void> close() async {
+    if (_db != null && _db!.isOpen) {
+      await _db!.close();
+      _db = null;
+    }
   }
 }

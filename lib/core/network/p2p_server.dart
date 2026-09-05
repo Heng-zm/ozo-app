@@ -39,6 +39,7 @@ class P2pServer {
   TypingCallback? onTyping;
   GroupInviteCallback? onGroupInvite;
   GroupRelayCallback? onGroupMessage;
+  void Function(String groupId, String newHostId, String newHostName, String? newBackupHostId, String? newBackupHostName)? onGroupMigrated;
   ReactionCallback? onReactionReceived;
   DeleteMessageCallback? onMessageDeleted;
   CallSignalingCallback? onCallSignaling;
@@ -259,6 +260,14 @@ class P2pServer {
             case 'CALL_END':
               final signaling = CallSignaling.fromJson(msg);
               onCallSignaling?.call(signaling);
+              break;
+            case 'GROUP_MIGRATED':
+              final groupId = msg['groupId'] as String;
+              final newHostId = msg['newHostId'] as String;
+              final newHostName = msg['newHostName'] as String? ?? 'New Host';
+              final newBackupHostId = msg['newBackupHostId'] as String?;
+              final newBackupHostName = msg['newBackupHostName'] as String?;
+              onGroupMigrated?.call(groupId, newHostId, newHostName, newBackupHostId, newBackupHostName);
               break;
           }
         } catch (e) {
