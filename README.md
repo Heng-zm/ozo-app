@@ -49,7 +49,23 @@ Built with **Flutter (Dart)** from a **single codebase** targeting **Windows, ma
 
 ---
 
-## 📦 Getting Started
+## 📥 Pre-Built Downloads & Releases
+
+Automated production releases for all platforms are published upon every successful build. You can download the latest binaries directly from:
+
+👉 **[Download Latest Releases (APK, Windows EXE, Linux, macOS)](https://github.com/Heng-zm/ozo-app/releases)**
+
+| Platform | Download Asset | Format |
+| :--- | :--- | :--- |
+| **Android** | `ozo-app-android.apk` | Release APK (Direct install) |
+| **Windows** | `ozo-app-windows-x64.zip` | Standalone portable executable bundle |
+| **Linux** | `ozo-app-linux-x64.tar.gz` | Portable Linux bundle |
+| **macOS** | `ozo-app-macos.zip` | Standalone `.app` bundle |
+| **iOS** | `ozo-app-ios-unsigned.zip` | Unsigned app bundle for sideloading |
+
+---
+
+## 📦 Getting Started (Building from Source)
 
 ### Prerequisites
 - [Flutter SDK](https://flutter.dev/docs/get-started/install) (3.24+ recommended)

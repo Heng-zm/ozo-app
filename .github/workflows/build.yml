@@ -1,11 +1,15 @@
-name: Build All Platforms
+name: Build & Release All Platforms
 
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   # 1. Test & Static Analysis
@@ -43,11 +47,13 @@ jobs:
       - run: flutter pub get
       - name: Build APK
         run: flutter build apk --release
+      - name: Prepare Android APK artifact
+        run: cp build/app/outputs/flutter-apk/app-release.apk ozo-app-android.apk
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: ozo-app-android.apk
 
   # 3. Windows Desktop Build
   build-windows:
@@ -65,11 +71,14 @@ jobs:
         run: flutter config --enable-windows-desktop
       - name: Build Windows
         run: flutter build windows --release
+      - name: Package Windows Bundle
+        shell: pwsh
+        run: Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "ozo-app-windows-x64.zip"
       - name: Upload Windows Bundle
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
-          path: build/windows/x64/runner/Release/
+          path: ozo-app-windows-x64.zip
 
   # 4. Linux Desktop Build
   build-linux:
@@ -91,11 +100,13 @@ jobs:
         run: flutter config --enable-linux-desktop
       - name: Build Linux
         run: flutter build linux --release
+      - name: Package Linux Bundle
+        run: tar -czvf ozo-app-linux-x64.tar.gz -C build/linux/x64/release/bundle .
       - name: Upload Linux Bundle
         uses: actions/upload-artifact@v4
         with:
           name: linux-release
-          path: build/linux/x64/release/bundle/
+          path: ozo-app-linux-x64.tar.gz
 
   # 5. macOS & iOS Build
   build-apple:
@@ -113,15 +124,58 @@ jobs:
         run: flutter config --enable-macos-desktop
       - name: Build macOS
         run: flutter build macos --release
+      - name: Package macOS App
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r ../../../../ozo-app-macos.zip *.app
       - name: Build iOS (No Codesign)
         run: flutter build ios --release --no-codesign
+      - name: Package iOS App
+        run: |
+          cd build/ios/iphoneos
+          zip -r ../../../ozo-app-ios-unsigned.zip Runner.app
       - name: Upload macOS App
         uses: actions/upload-artifact@v4
         with:
           name: macos-release
-          path: build/macos/Build/Products/Release/*.app
+          path: ozo-app-macos.zip
       - name: Upload iOS App
         uses: actions/upload-artifact@v4
         with:
           name: ios-release
-          path: build/ios/iphoneos/*.app
+          path: ozo-app-ios-unsigned.zip
+
+  # 6. Publish to GitHub Releases
+  publish-release:
+    name: Publish to GitHub Releases
+    needs: [build-android, build-windows, build-linux, build-apple]
+    if: |
+      always() &&
+      !cancelled() &&
+      (needs.build-android.result == 'success' || needs.build-windows.result == 'success' || needs.build-linux.result == 'success' || needs.build-apple.result == 'success') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List downloaded release assets
+        run: ls -lh release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.0.{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Release v1.0.{0}', github.run_number) }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: release-assets/*
