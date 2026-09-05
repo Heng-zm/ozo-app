@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Lan Telegram</string>
+	<string>OZO</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>lan_telegram</string>
+	<string>ozo</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -66,14 +66,34 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+
+	<!-- Local Area Network Peer Discovery -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>LAN Telegram requires access to the local network to discover peers, exchange encrypted messages, and transfer files without internet access.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>LAN Telegram requires microphone access to record and send encrypted voice notes.</string>
+	<string>OZO requires access to the local network to discover peers, exchange encrypted messages, and transfer files without internet access.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_lan-tg._tcp</string>
 		<string>_lan-tg._udp</string>
+		<string>_ozo._tcp</string>
+		<string>_ozo._udp</string>
 	</array>
+
+	<!-- Voice Notes & Audio Recording -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>OZO requires microphone access to record and send encrypted voice notes.</string>
+
+	<!-- Camera & QR Code Scanning -->
+	<key>NSCameraUsageDescription</key>
+	<string>OZO requires camera access to scan QR codes for pairing linked devices and connecting to peer hotspots.</string>
+
+	<!-- Photo & Video Sharing -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>OZO requires access to your photo library to select photos and videos to share with your peers.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>OZO requires permission to save received photos and videos to your photo library.</string>
+
+	<!-- App Lock & Biometrics -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>OZO uses Face ID to securely unlock your app and safeguard your private messages.</string>
 </dict>
 </plist>

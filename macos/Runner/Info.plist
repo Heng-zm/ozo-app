@@ -26,9 +26,13 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
+	<key>CFBundleDisplayName</key>
+	<string>OZO</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>LAN Telegram requires microphone access to record and send encrypted voice notes.</string>
+	<string>OZO requires microphone access to record and send encrypted voice notes.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>OZO requires camera access to scan QR codes for linked devices.</string>
 </dict>
 </plist>
