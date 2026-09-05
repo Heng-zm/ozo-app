@@ -14,7 +14,7 @@ import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
 import '../core/transfers/file_transfer_manager.dart';
 
-/// Central provider orchestrating discovery, messaging, encryption, and transfers
+/// Central provider orchestrating discovery, messaging, encryption, groups, and transfers
 class ChatProvider extends ChangeNotifier {
   final CryptoService cryptoService = CryptoService();
   final AppDatabase database = AppDatabase();
@@ -31,8 +31,9 @@ class ChatProvider extends ChangeNotifier {
   int _serverPort = AppConstants.defaultP2pPort;
   bool _isInitialized = false;
 
-  // Currently selected peer for chat
+  // Selected chat target
   Peer? _activePeer;
+  GroupChat? _activeGroup;
   final Map<String, bool> _typingPeers = {};
 
   String get deviceId => _deviceId;
@@ -41,10 +42,24 @@ class ChatProvider extends ChangeNotifier {
   int get serverPort => _serverPort;
   bool get isInitialized => _isInitialized;
   Peer? get activePeer => _activePeer;
+  GroupChat? get activeGroup => _activeGroup;
+  bool get isGroupSelected => _activeGroup != null;
 
-  List<ChatMessage> get activeMessages => _activePeer != null
-      ? database.getMessagesForChat(_activePeer!.id)
-      : [];
+  bool get isGroupHostOnline {
+    if (_activeGroup == null) return true;
+    if (_activeGroup!.hostId == _deviceId) return true;
+    return database.knownPeers[_activeGroup!.hostId]?.isOnline ?? false;
+  }
+
+  List<ChatMessage> get activeMessages {
+    if (_activeGroup != null) {
+      return database.getMessagesForChat(_activeGroup!.id);
+    }
+    if (_activePeer != null) {
+      return database.getMessagesForChat(_activePeer!.id);
+    }
+    return [];
+  }
 
   bool isPeerTyping(String peerId) => _typingPeers[peerId] ?? false;
 
@@ -118,8 +133,10 @@ class ChatProvider extends ChangeNotifier {
     server.onFileOffered = _handleIncomingFileOffer;
     server.onDeliveryReceipt = _handleDeliveryReceipt;
     server.onTyping = _handleTyping;
+    server.onGroupInvite = _handleIncomingGroupInvite;
+    server.onGroupMessage = _handleIncomingGroupMessage;
 
-    // 7. Start UDP LAN Discovery Service
+    // 7. Start UDP LAN Discovery Service (Broadcast-first)
     discoveryService = DiscoveryService(
       deviceId: _deviceId,
       deviceName: _deviceName,
@@ -135,12 +152,91 @@ class ChatProvider extends ChangeNotifier {
 
   void setActivePeer(Peer? peer) {
     _activePeer = peer;
+    _activeGroup = null;
     notifyListeners();
   }
 
-  /// Sends a text message to the currently active peer
+  void setActiveGroup(GroupChat? group) {
+    _activeGroup = group;
+    _activePeer = null;
+    notifyListeners();
+  }
+
+  /// Creates a new Group Chat where this node is Host
+  Future<GroupChat> createGroup({
+    required String name,
+    required List<String> memberIds,
+  }) async {
+    final allMembers = {...memberIds, _deviceId}.toList();
+    final group = GroupChat(
+      id: _uuid.v4(),
+      name: name,
+      hostId: _deviceId,
+      hostName: _deviceName,
+      memberIds: allMembers,
+      createdAt: DateTime.now(),
+    );
+
+    await database.saveGroup(group);
+
+    // Send invitations to all members
+    for (final memberId in memberIds) {
+      final peer = database.knownPeers[memberId];
+      if (peer != null) {
+        client.sendGroupInvite(peer: peer, group: group);
+      }
+    }
+
+    setActiveGroup(group);
+    return group;
+  }
+
+  /// Sends a text message to active peer or active group
   Future<void> sendTextMessage(String text) async {
-    if (_activePeer == null || text.trim().isEmpty) return;
+    if (text.trim().isEmpty) return;
+
+    if (_activeGroup != null) {
+      final group = _activeGroup!;
+      if (!isGroupHostOnline) return; // Read-only if host is disconnected
+
+      final messageId = _uuid.v4();
+      final msg = ChatMessage(
+        id: messageId,
+        chatId: group.id,
+        senderId: _deviceId,
+        senderName: _deviceName,
+        recipientId: group.id,
+        content: text.trim(),
+        type: MessageType.text,
+        timestamp: DateTime.now(),
+        status: MessageStatus.delivered,
+        isGroup: true,
+        groupId: group.id,
+      );
+
+      await database.saveMessage(msg);
+      notifyListeners();
+
+      if (group.hostId == _deviceId) {
+        // I am host: relay to all other members
+        for (final memberId in group.memberIds) {
+          if (memberId == _deviceId) continue;
+          final peer = database.knownPeers[memberId];
+          if (peer != null && peer.isOnline) {
+            client.relayGroupMessage(memberPeer: peer, group: group, message: msg);
+          }
+        }
+      } else {
+        // I am member: send to host
+        final hostPeer = database.knownPeers[group.hostId];
+        if (hostPeer != null && hostPeer.isOnline) {
+          client.sendGroupMessage(hostPeer: hostPeer, group: group, message: msg);
+        }
+      }
+      return;
+    }
+
+    if (_activePeer == null) return;
 
     final peer = _activePeer!;
     final messageId = _uuid.v4();
@@ -279,6 +375,30 @@ class ChatProvider extends ChangeNotifier {
 
     database.saveMessage(msg);
     notifyListeners();
+  }
+
+  void _handleIncomingGroupInvite(GroupChat group) {
+    database.saveGroup(group);
+    notifyListeners();
+  }
+
+  void _handleIncomingGroupMessage(ChatMessage msg, String groupId) {
+    final group = database.getGroup(groupId);
+    if (group == null) return;
+
+    database.saveMessage(msg);
+    notifyListeners();
+
+    // If I am host, relay to other members
+    if (group.hostId == _deviceId) {
+      for (final memberId in group.memberIds) {
+        if (memberId == _deviceId || memberId == msg.senderId) continue;
+        final peer = database.knownPeers[memberId];
+        if (peer != null && peer.isOnline) {
+          client.relayGroupMessage(memberPeer: peer, group: group, message: msg);
+        }
+      }
+    }
   }
 
   void _handleDeliveryReceipt(String messageId, MessageStatus status) {

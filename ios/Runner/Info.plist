@@ -66,5 +66,12 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>LAN Telegram requires access to the local network to discover peers, exchange encrypted messages, and transfer files without internet access.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_lan-tg._tcp</string>
+		<string>_lan-tg._udp</string>
+	</array>
 </dict>
 </plist>

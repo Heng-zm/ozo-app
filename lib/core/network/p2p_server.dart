@@ -10,6 +10,8 @@ typedef MessageCallback = void Function(ChatMessage message);
 typedef FileOfferCallback = void Function(FileMetadata file, Peer sender);
 typedef DeliveryReceiptCallback = void Function(String messageId, MessageStatus status);
 typedef TypingCallback = void Function(String peerId, bool isTyping);
+typedef GroupInviteCallback = void Function(GroupChat group);
+typedef GroupRelayCallback = void Function(ChatMessage message, String groupId);
 
 /// Embedded HTTP and WebSocket server running locally on each peer
 class P2pServer {
@@ -32,6 +34,8 @@ class P2pServer {
   FileOfferCallback? onFileOffered;
   DeliveryReceiptCallback? onDeliveryReceipt;
   TypingCallback? onTyping;
+  GroupInviteCallback? onGroupInvite;
+  GroupRelayCallback? onGroupMessage;
 
   int get port => _actualPort;
 
@@ -225,6 +229,13 @@ class P2pServer {
                 onTyping?.call(senderId, isTyping);
               }
               break;
+            case 'GROUP_INVITE':
+              _handleIncomingGroupInvite(msg);
+              break;
+            case 'GROUP_MSG':
+            case 'GROUP_RELAY':
+              _handleIncomingGroupMessage(msg);
+              break;
           }
         } catch (e) {
           if (kDebugMode) print('WS parse error: $e');
@@ -312,6 +323,44 @@ class P2pServer {
     );
 
     onFileOffered?.call(fileMeta, sender);
+  }
+
+  void _handleIncomingGroupInvite(Map<String, dynamic> msg) {
+    try {
+      final group = GroupChat.fromJson(msg['group'] as Map<String, dynamic>);
+      onGroupInvite?.call(group);
+    } catch (e) {
+      if (kDebugMode) print('Failed to parse group invite: $e');
+    }
+  }
+
+  void _handleIncomingGroupMessage(Map<String, dynamic> msg) {
+    try {
+      final groupId = msg['groupId'] as String;
+      final messageId = msg['id'] as String;
+      final senderId = msg['senderId'] as String;
+      final senderName = msg['senderName'] as String? ?? 'Member';
+      final content = msg['content'] as String? ?? '';
+      final timestamp = DateTime.fromMillisecondsSinceEpoch(msg['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch);
+
+      final chatMsg = ChatMessage(
+        id: messageId,
+        chatId: groupId,
+        senderId: senderId,
+        senderName: senderName,
+        recipientId: groupId,
+        content: content,
+        type: MessageType.text,
+        timestamp: timestamp,
+        status: MessageStatus.delivered,
+        isGroup: true,
+        groupId: groupId,
+      );
+
+      onGroupMessage?.call(chatMsg, groupId);
+    } catch (e) {
+      if (kDebugMode) print('Failed to parse group message: $e');
+    }
   }
 
   Future<void> stop() async {

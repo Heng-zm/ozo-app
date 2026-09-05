@@ -155,6 +155,85 @@ class P2pClient {
     } catch (_) {}
   }
 
+  /// Sends a group invitation to a peer
+  Future<bool> sendGroupInvite({
+    required Peer peer,
+    required GroupChat group,
+  }) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return false;
+
+    final payload = jsonEncode({
+      'type': 'GROUP_INVITE',
+      'senderId': deviceId,
+      'group': group.toJson(),
+    });
+
+    try {
+      socket.add(payload);
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
+      return false;
+    }
+  }
+
+  /// Member sends message to group Host
+  Future<bool> sendGroupMessage({
+    required Peer hostPeer,
+    required GroupChat group,
+    required ChatMessage message,
+  }) async {
+    final socket = await getOrConnect(hostPeer);
+    if (socket == null) return false;
+
+    final payload = jsonEncode({
+      'type': 'GROUP_MSG',
+      'groupId': group.id,
+      'id': message.id,
+      'senderId': deviceId,
+      'senderName': deviceName,
+      'content': message.content,
+      'ts': message.timestamp.millisecondsSinceEpoch,
+    });
+
+    try {
+      socket.add(payload);
+      return true;
+    } catch (_) {
+      _sockets.remove(hostPeer.id);
+      return false;
+    }
+  }
+
+  /// Host relays message to a group member
+  Future<bool> relayGroupMessage({
+    required Peer memberPeer,
+    required GroupChat group,
+    required ChatMessage message,
+  }) async {
+    final socket = await getOrConnect(memberPeer);
+    if (socket == null) return false;
+
+    final payload = jsonEncode({
+      'type': 'GROUP_RELAY',
+      'groupId': group.id,
+      'id': message.id,
+      'senderId': message.senderId,
+      'senderName': message.senderName,
+      'content': message.content,
+      'ts': message.timestamp.millisecondsSinceEpoch,
+    });
+
+    try {
+      socket.add(payload);
+      return true;
+    } catch (_) {
+      _sockets.remove(memberPeer.id);
+      return false;
+    }
+  }
+
   void close() {
     for (final s in _sockets.values) {
       try {

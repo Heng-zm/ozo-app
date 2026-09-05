@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import '../constants.dart';
 
 enum MessageType { text, file }
@@ -14,6 +16,7 @@ class Peer {
   final String publicKey;
   final String platform;
   DateTime lastSeen;
+  bool hasIdentityConflict;
 
   Peer({
     required this.id,
@@ -23,10 +26,18 @@ class Peer {
     required this.publicKey,
     required this.platform,
     required this.lastSeen,
+    this.hasIdentityConflict = false,
   });
 
   bool get isOnline =>
       DateTime.now().difference(lastSeen) < AppConstants.peerOfflineThreshold;
+
+  /// Short 8-character cryptographic safety fingerprint (e.g. A1B2-C3D4)
+  String get safetyFingerprint {
+    if (publicKey.isEmpty) return '0000-0000';
+    final digest = sha256.convert(utf8.encode(publicKey)).toString().toUpperCase();
+    return '${digest.substring(0, 4)}-${digest.substring(4, 8)}';
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -36,6 +47,7 @@ class Peer {
         'publicKey': publicKey,
         'platform': platform,
         'lastSeen': lastSeen.toIso8601String(),
+        'hasIdentityConflict': hasIdentityConflict,
       };
 
   factory Peer.fromJson(Map<String, dynamic> json) => Peer(
@@ -48,6 +60,7 @@ class Peer {
         lastSeen: json['lastSeen'] != null
             ? DateTime.parse(json['lastSeen'] as String)
             : DateTime.now(),
+        hasIdentityConflict: json['hasIdentityConflict'] as bool? ?? false,
       );
 
   Peer copyWith({
@@ -57,6 +70,7 @@ class Peer {
     String? publicKey,
     String? platform,
     DateTime? lastSeen,
+    bool? hasIdentityConflict,
   }) {
     return Peer(
       id: id,
@@ -66,8 +80,51 @@ class Peer {
       publicKey: publicKey ?? this.publicKey,
       platform: platform ?? this.platform,
       lastSeen: lastSeen ?? this.lastSeen,
+      hasIdentityConflict: hasIdentityConflict ?? this.hasIdentityConflict,
     );
   }
+}
+
+/// Represents a local group chat coordinated via Host-Relay
+class GroupChat {
+  final String id;
+  final String name;
+  final String hostId;
+  final String hostName;
+  final List<String> memberIds;
+  final DateTime createdAt;
+
+  GroupChat({
+    required this.id,
+    required this.name,
+    required this.hostId,
+    required this.hostName,
+    required this.memberIds,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'hostId': hostId,
+        'hostName': hostName,
+        'memberIds': memberIds,
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  factory GroupChat.fromJson(Map<String, dynamic> json) => GroupChat(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        hostId: json['hostId'] as String,
+        hostName: json['hostName'] as String? ?? 'Host',
+        memberIds: (json['memberIds'] as List<dynamic>?)
+                ?.map((e) => e.toString())
+                .toList() ??
+            [],
+        createdAt: json['createdAt'] != null
+            ? DateTime.parse(json['createdAt'] as String)
+            : DateTime.now(),
+      );
 }
 
 /// Metadata for file attachment in chat
@@ -107,7 +164,7 @@ class FileMetadata {
       );
 }
 
-/// Represents a chat message (text or file offer)
+/// Represents a chat message (1-on-1 or Host-Relayed Group)
 class ChatMessage {
   final String id;
   final String chatId;
@@ -119,6 +176,8 @@ class ChatMessage {
   final DateTime timestamp;
   MessageStatus status;
   final FileMetadata? fileMetadata;
+  final bool isGroup;
+  final String? groupId;
 
   ChatMessage({
     required this.id,
@@ -131,6 +190,8 @@ class ChatMessage {
     required this.timestamp,
     this.status = MessageStatus.pending,
     this.fileMetadata,
+    this.isGroup = false,
+    this.groupId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -144,6 +205,8 @@ class ChatMessage {
         'timestamp': timestamp.toIso8601String(),
         'status': status.name,
         'fileMetadata': fileMetadata?.toJson(),
+        'isGroup': isGroup,
+        'groupId': groupId,
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -165,6 +228,8 @@ class ChatMessage {
             ? FileMetadata.fromJson(
                 json['fileMetadata'] as Map<String, dynamic>)
             : null,
+        isGroup: json['isGroup'] as bool? ?? false,
+        groupId: json['groupId'] as String?,
       );
 }
 

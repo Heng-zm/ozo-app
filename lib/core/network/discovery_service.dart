@@ -4,8 +4,9 @@ import 'dart:io';
 import '../constants.dart';
 import '../database/models.dart';
 
-/// UDP Beacon & Probe Discovery Service
-/// Discovers other instances on the LAN without cloud servers.
+/// Broadcast-First UDP Beacon & Probe Discovery Service
+/// Prioritizes subnet broadcast and directed-broadcast addresses;
+/// treats multicast as an optional, soft-failing enhancement.
 class DiscoveryService {
   final String deviceId;
   final String deviceName;
@@ -17,7 +18,14 @@ class DiscoveryService {
   Timer? _beaconTimer;
   final _peerDiscoveredController = StreamController<Peer>.broadcast();
 
+  final List<String> _directedBroadcastAddresses = [];
+  DateTime? _lastPeerDiscoveredAt;
+  final DateTime _startedAt = DateTime.now();
+
   Stream<Peer> get onPeerDiscovered => _peerDiscoveredController.stream;
+  DateTime? get lastPeerDiscoveredAt => _lastPeerDiscoveredAt;
+  bool get hasDiscoveredAnyPeer => _lastPeerDiscoveredAt != null;
+  Duration get uptime => DateTime.now().difference(_startedAt);
 
   DiscoveryService({
     required this.deviceId,
@@ -30,9 +38,10 @@ class DiscoveryService {
   /// Starts listening for UDP beacons and broadcasts periodic announcements
   Future<void> start() async {
     await stop();
+    await _resolveDirectedBroadcastAddresses();
 
     try {
-      // Bind to any IPv4 on the default discovery port
+      // Primary: Bind to any IPv4 on default discovery port
       _socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
         AppConstants.defaultDiscoveryPort,
@@ -42,10 +51,11 @@ class DiscoveryService {
       _socket?.broadcastEnabled = true;
       _socket?.multicastLoopback = false;
 
+      // Soft-fail multicast enhancement only
       try {
         _socket?.joinMulticast(InternetAddress(AppConstants.multicastAddress));
       } catch (_) {
-        // Multicast might not be supported on all network interfaces
+        // Silently ignore multicast denial on iOS/Android
       }
 
       _socket?.listen((RawSocketEvent event) {
@@ -65,8 +75,7 @@ class DiscoveryService {
         broadcastBeacon();
       });
     } catch (e) {
-      // If port 45454 is already bound by another process without reuseAddress,
-      // fallback to ephemeral port for listening & sending probes.
+      // Ephemeral fallback port if default is bound
       try {
         _socket = await RawDatagramSocket.bind(
           InternetAddress.anyIPv4,
@@ -91,7 +100,33 @@ class DiscoveryService {
     }
   }
 
-  /// Sends a broadcast beacon packet to the LAN
+  /// Discovers local network interfaces and computes directed subnet broadcasts (e.g. 192.168.1.255)
+  Future<void> _resolveDirectedBroadcastAddresses() async {
+    _directedBroadcastAddresses.clear();
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLinkLocal: false,
+      );
+
+      for (final iface in interfaces) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback) {
+            final parts = addr.address.split('.');
+            if (parts.length == 4) {
+              // Standard /24 broadcast address
+              final directed = '${parts[0]}.${parts[1]}.${parts[2]}.255';
+              if (!_directedBroadcastAddresses.contains(directed)) {
+                _directedBroadcastAddresses.add(directed);
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// Sends a broadcast beacon packet across all broadcast channels
   void broadcastBeacon() {
     if (_socket == null) return;
 
@@ -108,8 +143,8 @@ class DiscoveryService {
 
     final data = utf8.encode(payload);
 
+    // 1. Primary universal broadcast
     try {
-      // Subnet broadcast
       _socket?.send(
         data,
         InternetAddress('255.255.255.255'),
@@ -117,8 +152,19 @@ class DiscoveryService {
       );
     } catch (_) {}
 
+    // 2. Interface-directed subnet broadcasts (e.g. 192.168.1.255)
+    for (final directedIp in _directedBroadcastAddresses) {
+      try {
+        _socket?.send(
+          data,
+          InternetAddress(directedIp),
+          AppConstants.defaultDiscoveryPort,
+        );
+      } catch (_) {}
+    }
+
+    // 3. Optional multicast enhancement (soft-fail)
     try {
-      // Multicast broadcast
       _socket?.send(
         data,
         InternetAddress(AppConstants.multicastAddress),
@@ -137,6 +183,8 @@ class DiscoveryService {
       final remoteDeviceId = json['id'] as String?;
       // Ignore self-broadcasts
       if (remoteDeviceId == null || remoteDeviceId == deviceId) return;
+
+      _lastPeerDiscoveredAt = DateTime.now();
 
       final peer = Peer(
         id: remoteDeviceId,

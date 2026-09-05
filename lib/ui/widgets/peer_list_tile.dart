@@ -70,6 +70,13 @@ class PeerListTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          if (peer.hasIdentityConflict) ...[
+            const Tooltip(
+              message: 'Identity changed! Possible impersonation attempt.',
+              child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 18),
+            ),
+            const SizedBox(width: 4),
+          ],
           _buildPlatformBadge(peer.platform),
         ],
       ),

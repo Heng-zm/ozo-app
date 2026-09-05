@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/active_chat_view.dart';
+import '../widgets/group_create_dialog.dart';
 import '../widgets/peer_list_tile.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -36,6 +37,7 @@ class HomeScreen extends StatelessWidget {
       builder: (context, constraints) {
         final isDesktop = constraints.maxWidth >= 720;
         final selectedPeer = chatProvider.activePeer;
+        final selectedGroup = chatProvider.activeGroup;
 
         if (isDesktop) {
           // Desktop 2-column Telegram layout
@@ -48,16 +50,23 @@ class HomeScreen extends StatelessWidget {
                 ),
                 const VerticalDivider(width: 1, thickness: 1),
                 Expanded(
-                  child: selectedPeer != null
-                      ? ActiveChatView(peer: selectedPeer)
-                      : _buildEmptyState(context),
+                  child: selectedGroup != null
+                      ? ActiveChatView(group: selectedGroup)
+                      : (selectedPeer != null
+                          ? ActiveChatView(peer: selectedPeer)
+                          : _buildEmptyState(context)),
                 ),
               ],
             ),
           );
         } else {
           // Mobile stack layout
-          if (selectedPeer != null) {
+          if (selectedGroup != null) {
+            return ActiveChatView(
+              group: selectedGroup,
+              onBack: () => chatProvider.setActiveGroup(null),
+            );
+          } else if (selectedPeer != null) {
             return ActiveChatView(
               peer: selectedPeer,
               onBack: () => chatProvider.setActivePeer(null),
@@ -80,6 +89,7 @@ class HomeScreen extends StatelessWidget {
         if (!a.isOnline && b.isOnline) return 1;
         return b.lastSeen.compareTo(a.lastSeen);
       });
+    final groups = provider.database.groups;
 
     return Container(
       color: isDark ? TelegramTheme.darkSidebar : TelegramTheme.lightSidebar,
@@ -87,55 +97,119 @@ class HomeScreen extends StatelessWidget {
         children: [
           _buildSidebarHeader(context, provider, isDark),
           Expanded(
-            child: knownPeers.isEmpty
-                ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24.0),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.wifi_tethering_rounded,
-                            size: 48,
-                            color: Colors.grey.shade400,
-                          ),
-                          const SizedBox(height: 12),
-                          const Text(
-                            'Searching for peers on LAN...',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
+            child: (knownPeers.isEmpty && groups.isEmpty)
+                ? _buildEmptyPeersDiagnostic(context, provider)
+                : ListView(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    children: [
+                      // Group Chats Section
+                      if (groups.isNotEmpty) ...[
+                        _buildSectionHeader('GROUP CHATS (${groups.length})', isDark),
+                        ...groups.map((group) {
+                          final isSelected = provider.activeGroup?.id == group.id;
+                          return ListTile(
+                            selected: isSelected,
+                            selectedTileColor: isDark
+                                ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
+                                : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                            onTap: () => provider.setActiveGroup(group),
+                            leading: CircleAvatar(
+                              radius: 22,
+                              backgroundColor: Colors.indigo.shade600,
+                              child: const Icon(Icons.group_rounded, color: Colors.white, size: 20),
                             ),
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Open the app on another device connected to the same Wi-Fi or subnet.',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade600,
+                            title: Text(
+                              group.name,
+                              style: TextStyle(
+                                fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                                fontSize: 14,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: knownPeers.length,
-                    itemBuilder: (context, index) {
-                      final peer = knownPeers[index];
-                      final isSelected = provider.activePeer?.id == peer.id;
-                      return PeerListTile(
-                        peer: peer,
-                        isSelected: isSelected,
-                        onTap: () => provider.setActivePeer(peer),
-                      );
-                    },
+                            subtitle: Text(
+                              '${group.memberIds.length} members • Host: ${group.hostName}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+                              ),
+                            ),
+                          );
+                        }),
+                        const Divider(height: 16, indent: 16, endIndent: 16),
+                      ],
+                      // Direct Peers Section
+                      if (knownPeers.isNotEmpty) ...[
+                        _buildSectionHeader('DISCOVERED PEERS (${knownPeers.length})', isDark),
+                        ...knownPeers.map((peer) {
+                          final isSelected = provider.activePeer?.id == peer.id;
+                          return PeerListTile(
+                            peer: peer,
+                            isSelected: isSelected,
+                            onTap: () => provider.setActivePeer(peer),
+                          );
+                        }),
+                      ],
+                    ],
                   ),
           ),
           _buildBottomNodeInfo(context, provider, isDark),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title, bool isDark) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 0.5,
+          color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyPeersDiagnostic(BuildContext context, ChatProvider provider) {
+    final isUptimeLong = provider.discoveryService.uptime.inSeconds >= 8;
+
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isUptimeLong ? Icons.wifi_lock_rounded : Icons.wifi_tethering_rounded,
+              size: 48,
+              color: isUptimeLong ? Colors.amber.shade700 : TelegramTheme.primaryBlue,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              isUptimeLong ? 'No LAN Peers Detected' : 'Scanning LAN for Peers...',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              isUptimeLong
+                  ? 'If you are connected to guest, hotel, or corporate Wi-Fi, Client/AP Isolation is likely active on the router, preventing devices from communicating directly.'
+                  : 'Make sure other devices are running LAN Telegram on the same subnet.',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.network_check_rounded, size: 16),
+              label: const Text('Network Diagnostics', style: TextStyle(fontSize: 12)),
+              onPressed: () => _showDiagnosticsDialog(context, provider),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -146,7 +220,7 @@ class HomeScreen extends StatelessWidget {
     bool isDark,
   ) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         color: isDark ? TelegramTheme.darkSidebar : Colors.white,
         border: Border(
@@ -168,34 +242,44 @@ class HomeScreen extends StatelessWidget {
               child: const Icon(
                 Icons.send_rounded,
                 color: TelegramTheme.primaryBlue,
-                size: 20,
+                size: 18,
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             const Expanded(
               child: Text(
                 'LAN Telegram',
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  fontSize: 17,
+                  fontSize: 16,
                 ),
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.refresh_rounded),
+              icon: const Icon(Icons.group_add_outlined, size: 20),
+              tooltip: 'New Group Chat',
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (_) => const GroupCreateDialog(),
+                );
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh_rounded, size: 20),
               tooltip: 'Rescan LAN',
               onPressed: () {
                 provider.discoveryService.broadcastBeacon();
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text('Sent discovery broadcast to LAN'),
+                    content: Text('Broadcast sent to 255.255.255.255 and subnets'),
                     duration: Duration(seconds: 1),
                   ),
                 );
               },
             ),
             IconButton(
-              icon: const Icon(Icons.settings_outlined),
+              icon: const Icon(Icons.settings_outlined, size: 20),
               tooltip: 'Device Settings',
               onPressed: () => _showSettingsDialog(context, provider),
             ),
@@ -255,13 +339,56 @@ class HomeScreen extends StatelessWidget {
             borderRadius: BorderRadius.circular(20),
           ),
           child: const Text(
-            'Select a discovered device to begin chatting',
+            'Select a discovered peer or group to begin chatting',
             style: TextStyle(
               fontSize: 14,
               color: Colors.grey,
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  void _showDiagnosticsDialog(BuildContext context, ChatProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.network_check_rounded, color: TelegramTheme.primaryBlue),
+            SizedBox(width: 8),
+            Text('Network Diagnostics'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'LAN Topology & Requirements:',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              '1. Both devices must connect to the same Wi-Fi SSID / local subnet.\n'
+              '2. Client/AP Isolation must be disabled in your Wi-Fi router settings.\n'
+              '3. Broadcast is primary; multicast is soft-optional.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const Divider(height: 20),
+            Text('Listening P2P Port: ${provider.serverPort}', style: const TextStyle(fontSize: 12)),
+            Text('Discovery UDP Port: 45454', style: const TextStyle(fontSize: 12)),
+            Text('Device ID: ${provider.deviceId}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            Text('Platform: ${provider.platform.toUpperCase()}', style: const TextStyle(fontSize: 12)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
       ),
     );
   }

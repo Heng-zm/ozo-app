@@ -5,16 +5,19 @@ import '../../core/database/models.dart';
 import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
 import 'chat_bubble.dart';
+import 'safety_number_dialog.dart';
 
 class ActiveChatView extends StatefulWidget {
-  final Peer peer;
+  final Peer? peer;
+  final GroupChat? group;
   final VoidCallback? onBack;
 
   const ActiveChatView({
     super.key,
-    required this.peer,
+    this.peer,
+    this.group,
     this.onBack,
-  });
+  }) : assert(peer != null || group != null);
 
   @override
   State<ActiveChatView> createState() => _ActiveChatViewState();
@@ -62,8 +65,13 @@ class _ActiveChatViewState extends State<ActiveChatView> {
     final provider = context.watch<ChatProvider>();
     final messages = provider.activeMessages;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final isOnline = widget.peer.isOnline;
-    final isTyping = provider.isPeerTyping(widget.peer.id);
+
+    final isGroup = widget.group != null;
+    final group = widget.group;
+    final peer = widget.peer;
+
+    final isOnline = isGroup ? provider.isGroupHostOnline : peer!.isOnline;
+    final isTyping = !isGroup && provider.isPeerTyping(peer!.id);
 
     _scrollToBottom();
 
@@ -81,13 +89,11 @@ class _ActiveChatViewState extends State<ActiveChatView> {
           children: [
             CircleAvatar(
               radius: 20,
-              backgroundColor: TelegramTheme.primaryBlue,
-              child: Text(
-                widget.peer.name.isNotEmpty ? widget.peer.name[0].toUpperCase() : '?',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
+              backgroundColor: isGroup ? Colors.indigo.shade600 : TelegramTheme.primaryBlue,
+              child: Icon(
+                isGroup ? Icons.group_rounded : Icons.person,
+                color: Colors.white,
+                size: 20,
               ),
             ),
             const SizedBox(width: 12),
@@ -96,18 +102,22 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    widget.peer.name,
+                    isGroup ? group!.name : peer!.name,
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   Text(
-                    isTyping
-                        ? 'typing...'
-                        : (isOnline ? 'online (${widget.peer.ip})' : 'offline'),
+                    isGroup
+                        ? '${group!.memberIds.length} members • Host: ${group.hostName}'
+                        : (isTyping
+                            ? 'typing...'
+                            : (isOnline ? 'online (${peer!.ip})' : 'offline')),
                     style: TextStyle(
                       fontSize: 12,
-                      color: isTyping
-                          ? TelegramTheme.primaryBlue
-                          : (isOnline ? TelegramTheme.onlineGreen : Colors.grey),
+                      color: isGroup
+                          ? (isOnline ? TelegramTheme.onlineGreen : Colors.orange)
+                          : (isTyping
+                              ? TelegramTheme.primaryBlue
+                              : (isOnline ? TelegramTheme.onlineGreen : Colors.grey)),
                       fontStyle: isTyping ? FontStyle.italic : FontStyle.normal,
                     ),
                   ),
@@ -117,33 +127,95 @@ class _ActiveChatViewState extends State<ActiveChatView> {
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: 'E2EE ChaCha20-Poly1305 Protected',
-            icon: const Icon(Icons.lock_rounded, color: TelegramTheme.onlineGreen, size: 20),
-            onPressed: () {
-              _showSecurityDetails(context, widget.peer);
-            },
-          ),
+          if (!isGroup) ...[
+            IconButton(
+              tooltip: 'Verify Safety Number',
+              icon: Icon(
+                peer!.hasIdentityConflict ? Icons.warning_amber_rounded : Icons.verified_user_rounded,
+                color: peer.hasIdentityConflict ? Colors.orange : TelegramTheme.onlineGreen,
+                size: 22,
+              ),
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (_) => SafetyNumberDialog(peer: peer),
+                );
+              },
+            ),
+          ] else ...[
+            IconButton(
+              tooltip: 'Group Information',
+              icon: const Icon(Icons.info_outline_rounded, size: 22),
+              onPressed: () => _showGroupInfo(context, group!),
+            ),
+          ],
         ],
       ),
       body: Column(
         children: [
-          // Security banner
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
-            color: Colors.black.withValues(alpha: 0.05),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.shield_outlined, size: 14, color: Colors.grey),
-                const SizedBox(width: 6),
-                Text(
-                  'End-to-End Encrypted via Direct LAN P2P',
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+          // Banner
+          if (isGroup && !isOnline)
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+              color: Colors.orange.withValues(alpha: 0.15),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock_clock, size: 16, color: Colors.orange),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Group creator (${group!.hostName}) is offline. This group is read-only until the host reconnects.',
+                      style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (!isGroup && peer!.hasIdentityConflict)
+            InkWell(
+              onTap: () => showDialog(
+                context: context,
+                builder: (_) => SafetyNumberDialog(peer: peer),
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+                color: Colors.red.withValues(alpha: 0.12),
+                child: const Row(
+                  children: [
+                    Icon(Icons.warning_amber_rounded, size: 16, color: Colors.red),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Identity Warning: Device key changed! Tap to verify safety number.',
+                        style: TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
+              color: Colors.black.withValues(alpha: 0.05),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    isGroup ? Icons.hub_outlined : Icons.shield_outlined,
+                    size: 14,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    isGroup
+                        ? 'Host-Relay Group via ${group!.hostName}'
+                        : 'End-to-End Encrypted via Direct LAN P2P',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                  ),
+                ],
+              ),
             ),
-          ),
           // Messages list
           Expanded(
             child: messages.isEmpty
@@ -154,9 +226,11 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                         color: Colors.black.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(16),
                       ),
-                      child: const Text(
-                        'No messages yet. Say hi over the local network!',
-                        style: TextStyle(fontSize: 13, color: Colors.grey),
+                      child: Text(
+                        isGroup
+                            ? 'No messages in this group yet.'
+                            : 'No messages yet. Say hi over the local network!',
+                        style: const TextStyle(fontSize: 13, color: Colors.grey),
                       ),
                     ),
                   )
@@ -175,32 +249,44 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                   ),
           ),
           // Input bar
-          _buildInputBar(context, provider, isDark),
+          _buildInputBar(context, provider, isDark, isGroup, isOnline),
         ],
       ),
     );
   }
 
-  Widget _buildInputBar(BuildContext context, ChatProvider provider, bool isDark) {
+  Widget _buildInputBar(
+    BuildContext context,
+    ChatProvider provider,
+    bool isDark,
+    bool isGroup,
+    bool isOnline,
+  ) {
+    final isReadOnly = isGroup && !isOnline;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       color: isDark ? TelegramTheme.darkSidebar : Colors.white,
       child: SafeArea(
         child: Row(
           children: [
-            IconButton(
-              icon: const Icon(Icons.attach_file_rounded),
-              color: Colors.grey.shade600,
-              tooltip: 'Send File / Media',
-              onPressed: () => provider.pickAndSendFile(),
-            ),
+            if (!isGroup)
+              IconButton(
+                icon: const Icon(Icons.attach_file_rounded),
+                color: Colors.grey.shade600,
+                tooltip: 'Send File / Media',
+                onPressed: () => provider.pickAndSendFile(),
+              ),
             Expanded(
               child: TextField(
                 controller: _textController,
+                enabled: !isReadOnly,
                 minLines: 1,
                 maxLines: 4,
                 decoration: InputDecoration(
-                  hintText: 'Write a message...',
+                  hintText: isReadOnly
+                      ? 'Group is read-only (host offline)...'
+                      : 'Write a message...',
                   hintStyle: TextStyle(color: Colors.grey.shade500),
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   border: OutlineInputBorder(
@@ -219,20 +305,22 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                       _isComposing = hasText;
                     });
                   }
-                  provider.sendTypingIndicator(hasText);
+                  if (!isGroup) {
+                    provider.sendTypingIndicator(hasText);
+                  }
                 },
-                onSubmitted: (_) => _handleSubmitted(provider),
+                onSubmitted: isReadOnly ? null : (_) => _handleSubmitted(provider),
               ),
             ),
             const SizedBox(width: 8),
             Container(
-              decoration: const BoxDecoration(
-                color: TelegramTheme.primaryBlue,
+              decoration: BoxDecoration(
+                color: isReadOnly ? Colors.grey : TelegramTheme.primaryBlue,
                 shape: BoxShape.circle,
               ),
               child: IconButton(
                 icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                onPressed: _isComposing ? () => _handleSubmitted(provider) : null,
+                onPressed: _isComposing && !isReadOnly ? () => _handleSubmitted(provider) : null,
               ),
             ),
           ],
@@ -241,35 +329,34 @@ class _ActiveChatViewState extends State<ActiveChatView> {
     );
   }
 
-  void _showSecurityDetails(BuildContext context, Peer peer) {
+  void _showGroupInfo(BuildContext context, GroupChat group) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.lock_rounded, color: TelegramTheme.onlineGreen),
-            SizedBox(width: 8),
-            Text('E2EE Security Info'),
+            const Icon(Icons.group_rounded, color: TelegramTheme.primaryBlue),
+            const SizedBox(width: 8),
+            Text(group.name),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text('Group ID: ${group.id}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            const SizedBox(height: 8),
+            Text('Host / Creator: ${group.hostName}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            const SizedBox(height: 12),
+            const Text('Architecture: Host-Relay', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
             const Text(
-              'Messages & files between you and this peer are end-to-end encrypted using X25519 ECDH key exchange and ChaCha20-Poly1305 AEAD.',
-              style: TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 16),
-            const Text('Peer Public Key Fingerprint:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-            const SizedBox(height: 4),
-            SelectableText(
-              peer.publicKey.isNotEmpty ? peer.publicKey : 'Generating...',
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+              'All messages in this group are relayed through the creator node to ensure low connection overhead and reliable ordering on LAN.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 12),
-            Text('IP Address: ${peer.ip}:${peer.port}', style: const TextStyle(fontSize: 12)),
-            Text('Platform: ${peer.platform.toUpperCase()}', style: const TextStyle(fontSize: 12)),
+            Text('Members (${group.memberIds.length}):', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+            const SizedBox(height: 4),
+            ...group.memberIds.map((m) => Text('• $m', style: const TextStyle(fontSize: 11, color: Colors.grey))),
           ],
         ),
         actions: [

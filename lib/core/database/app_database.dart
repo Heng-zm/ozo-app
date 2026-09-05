@@ -4,7 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'models.dart';
 
-/// Persistent local storage for messages, peers, and transfers
+/// Persistent local storage with TOFU key pinning, groups, and message history
 class AppDatabase {
   static final AppDatabase _instance = AppDatabase._internal();
   factory AppDatabase() => _instance;
@@ -12,12 +12,19 @@ class AppDatabase {
 
   File? _messagesFile;
   File? _peersFile;
+  File? _pinnedKeysFile;
+  File? _groupsFile;
 
   final List<ChatMessage> _messages = [];
   final Map<String, Peer> _knownPeers = {};
+  final Map<String, String> _pinnedKeys = {}; // deviceId -> originalPublicKey
+  final Map<String, GroupChat> _groups = {};
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
   Map<String, Peer> get knownPeers => Map.unmodifiable(_knownPeers);
+  Map<String, String> get pinnedKeys => Map.unmodifiable(_pinnedKeys);
+  List<GroupChat> get groups => _groups.values.toList()
+    ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
   Future<void> initialize({Directory? customDirectory}) async {
     Directory dbDir;
@@ -37,9 +44,42 @@ class AppDatabase {
 
     _messagesFile = File(p.join(dbDir.path, 'messages.json'));
     _peersFile = File(p.join(dbDir.path, 'peers.json'));
+    _pinnedKeysFile = File(p.join(dbDir.path, 'pinned_keys.json'));
+    _groupsFile = File(p.join(dbDir.path, 'groups.json'));
 
+    await _loadPinnedKeys();
     await _loadPeers();
+    await _loadGroups();
     await _loadMessages();
+  }
+
+  Future<void> _loadPinnedKeys() async {
+    try {
+      if (await _pinnedKeysFile!.exists()) {
+        final content = await _pinnedKeysFile!.readAsString();
+        if (content.isNotEmpty) {
+          final Map<String, dynamic> jsonMap = jsonDecode(content);
+          jsonMap.forEach((key, value) {
+            _pinnedKeys[key] = value.toString();
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _loadGroups() async {
+    try {
+      if (await _groupsFile!.exists()) {
+        final content = await _groupsFile!.readAsString();
+        if (content.isNotEmpty) {
+          final List<dynamic> jsonList = jsonDecode(content);
+          for (final item in jsonList) {
+            final group = GroupChat.fromJson(item as Map<String, dynamic>);
+            _groups[group.id] = group;
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadPeers() async {
@@ -50,13 +90,17 @@ class AppDatabase {
           final List<dynamic> jsonList = jsonDecode(content);
           for (final item in jsonList) {
             final peer = Peer.fromJson(item as Map<String, dynamic>);
+            // Check against pinned key
+            if (_pinnedKeys.containsKey(peer.id) &&
+                _pinnedKeys[peer.id] != peer.publicKey &&
+                peer.publicKey.isNotEmpty) {
+              peer.hasIdentityConflict = true;
+            }
             _knownPeers[peer.id] = peer;
           }
         }
       }
-    } catch (e) {
-      // Ignored or corrupted file recovery
-    }
+    } catch (_) {}
   }
 
   Future<void> _loadMessages() async {
@@ -71,14 +115,42 @@ class AppDatabase {
           }
         }
       }
-    } catch (e) {
-      // Recover cleanly
-    }
+    } catch (_) {}
   }
 
+  /// Saves or updates peer while enforcing Trust-On-First-Use (TOFU) key pinning
   Future<void> savePeer(Peer peer) async {
+    if (peer.publicKey.isNotEmpty) {
+      if (!_pinnedKeys.containsKey(peer.id)) {
+        // First contact: Pin this public key
+        _pinnedKeys[peer.id] = peer.publicKey;
+        await _persistPinnedKeys();
+      } else if (_pinnedKeys[peer.id] != peer.publicKey) {
+        // Conflict detected! The device public key changed.
+        peer.hasIdentityConflict = true;
+      }
+    }
+
     _knownPeers[peer.id] = peer;
     await _persistPeers();
+  }
+
+  Future<void> saveGroup(GroupChat group) async {
+    _groups[group.id] = group;
+    await _persistGroups();
+  }
+
+  GroupChat? getGroup(String id) => _groups[id];
+
+  Future<void> _persistPinnedKeys() async {
+    if (_pinnedKeysFile == null) return;
+    await _pinnedKeysFile!.writeAsString(jsonEncode(_pinnedKeys));
+  }
+
+  Future<void> _persistGroups() async {
+    if (_groupsFile == null) return;
+    final jsonList = _groups.values.map((g) => g.toJson()).toList();
+    await _groupsFile!.writeAsString(jsonEncode(jsonList));
   }
 
   Future<void> _persistPeers() async {
