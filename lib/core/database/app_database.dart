@@ -668,14 +668,17 @@ class AppDatabase {
     }
   }
 
-  /// O(1) retrieval leveraging LRU Cache and Bloom Filter fast negative check.
+  /// Checks authoritatively whether a message with [id] is already stored.
+  bool hasMessage(String id) {
+    if (_messageLruCache.containsKey(id)) return true;
+    final idx = _messageIndexById[id];
+    return idx != null && idx < _messages.length && _messages[idx].id == id;
+  }
+
+  /// Authoritative retrieval leveraging LRU Cache and in-memory index map.
   ChatMessage? getMessageById(String id) {
     final cached = _messageLruCache.get(id);
     if (cached != null) return cached;
-
-    if (!_messageBloomFilter.mightContain(id)) {
-      return null;
-    }
 
     final idx = _messageIndexById[id];
     if (idx != null && idx < _messages.length && _messages[idx].id == id) {
@@ -735,10 +738,11 @@ class AppDatabase {
   }
 
   Future<void> updateMessageReactions(String messageId, Map<String, List<String>> reactions) async {
-    final index = _messages.indexWhere((m) => m.id == messageId);
-    if (index >= 0) {
-      final updated = _messages[index].copyWith(reactions: reactions);
-      _messages[index] = updated;
+    final idx = _messageIndexById[messageId];
+    if (idx != null && idx < _messages.length && _messages[idx].id == messageId) {
+      final updated = _messages[idx].copyWith(reactions: reactions);
+      _messages[idx] = updated;
+      _messageLruCache.put(messageId, updated);
       if (_db != null) {
         await _db!.update(
           'messages',

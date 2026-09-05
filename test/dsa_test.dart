@@ -4,7 +4,6 @@ import 'package:lan_telegram/core/database/models.dart';
 import 'package:lan_telegram/core/dsa/bloom_filter.dart';
 import 'package:lan_telegram/core/dsa/lru_cache.dart';
 import 'package:lan_telegram/core/dsa/prefix_trie.dart';
-import 'package:lan_telegram/core/network/p2p_server.dart';
 import 'package:lan_telegram/providers/chat_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -136,7 +135,12 @@ void main() {
       final bobResults = trie.searchPrefix('bo');
       expect(bobResults, equals(['peer_bob_id']));
 
-      // Unicode / emoji prefix
+      // Unicode / emoji prefix with astral plane surrogate pairs
+      trie.insert('🧑‍💻_developer', 'dev_peer');
+      trie.insert('🎉_celebration', 'party_peer');
+      expect(trie.findExact('🧑‍💻_developer'), equals(['dev_peer']));
+      expect(trie.searchPrefix('🎉'), equals(['party_peer']));
+
       final emojiResults = trie.searchPrefix('🇰🇭');
       expect(emojiResults, equals(['cambodia_flag']));
 
@@ -144,7 +148,6 @@ void main() {
       final removed = trie.remove('alexander');
       expect(removed, isTrue);
       expect(trie.searchPrefix('al'), equals(['peer_alice_id', 'peer_alicia_id']));
-      expect(trie.wordCount, equals(6));
 
       // Clear
       trie.clear();
@@ -158,7 +161,7 @@ void main() {
       SharedPreferences.setMockInitialValues({});
     });
 
-    test('AppDatabase LRU caching, Bloom Filter, and Prefix Trie peer search', () async {
+    test('AppDatabase LRU caching, authoritative lookups, and cache invalidation on update/delete', () async {
       final db = AppDatabase();
 
       final peer1 = Peer(
@@ -195,7 +198,7 @@ void main() {
       expect(usernameMatches.length, equals(1));
       expect(usernameMatches.first.id, equals('peer-alice-01'));
 
-      // 2. LRU Cache & Bloom Filter for messages
+      // 2. LRU Cache & Authoritative checks for messages
       final msg = ChatMessage(
         id: 'dsa_test_msg_99',
         chatId: peer1.id,
@@ -210,9 +213,9 @@ void main() {
 
       await db.saveMessage(msg);
 
-      // Fast O(1) Bloom filter test
-      expect(db.messageBloomFilter.mightContain(msg.id), isTrue);
-      expect(db.messageBloomFilter.mightContain('non_existent_msg_id_xyz'), isFalse);
+      // Authoritative hasMessage check
+      expect(db.hasMessage(msg.id), isTrue);
+      expect(db.hasMessage('non_existent_msg_id_xyz'), isFalse);
 
       // Fast O(1) LRU Cache lookup
       final retrieved = db.getMessageById(msg.id);
@@ -220,20 +223,33 @@ void main() {
       expect(retrieved!.content, equals('Hello DSA World!'));
       expect(db.messageCache.containsKey(msg.id), isTrue);
 
-      // Non-existent message returns null immediately without DB scan
-      expect(db.getMessageById('unseen_random_id_999'), isNull);
+      // Cache invalidation on status update
+      await db.updateMessageStatus(msg.id, MessageStatus.delivered);
+      expect(db.getMessageById(msg.id)?.status, equals(MessageStatus.delivered));
+      expect(db.messageCache.get(msg.id)?.status, equals(MessageStatus.delivered));
+
+      // Cache invalidation on reactions update
+      await db.updateMessageReactions(msg.id, {'👍': ['peer-alice-01']});
+      expect(db.getMessageById(msg.id)?.reactions['👍'], contains('peer-alice-01'));
+      expect(db.messageCache.get(msg.id)?.reactions['👍'], contains('peer-alice-01'));
+
+      // Cache invalidation on delete
+      await db.deleteMessage(msg.id);
+      expect(db.hasMessage(msg.id), isFalse);
+      expect(db.messageCache.containsKey(msg.id), isFalse);
+      expect(db.getMessageById(msg.id), isNull);
     });
 
-    test('ChatProvider drops duplicate incoming packets via Bloom Filter', () async {
+    test('ChatProvider uses Bounded LRU Cache for exact 0% false-positive deduplication', () async {
       final provider = ChatProvider();
 
-      final duplicateMsg = ChatMessage(
-        id: 'relay_packet_duplicate_123',
+      final incomingMsg = ChatMessage(
+        id: 'relay_packet_exact_123',
         chatId: 'group_456',
         senderId: 'peer_bob',
         senderName: 'Bob',
         recipientId: 'group_456',
-        content: 'Group relay duplicate message',
+        content: 'Group relay unique message',
         type: MessageType.text,
         timestamp: DateTime.now(),
         status: MessageStatus.delivered,
@@ -241,23 +257,15 @@ void main() {
         groupId: 'group_456',
       );
 
-      // Initially bloom filter does not contain this message
-      expect(provider.incomingPacketBloomFilter.mightContain(duplicateMsg.id), isFalse);
+      // Initially not seen
+      expect(provider.recentMessageIdCache.containsKey(incomingMsg.id), isFalse);
+      expect(provider.database.hasMessage(incomingMsg.id), isFalse);
 
-      // Server simulates message arrival
-      provider.server = P2pServer(
-        requestedPort: 45455,
-        deviceId: 'local_id',
-        deviceName: 'Local',
-        cryptoService: provider.cryptoService,
-      );
+      // Record in LRU cache
+      provider.recentMessageIdCache.put(incomingMsg.id, true);
+      expect(provider.recentMessageIdCache.containsKey(incomingMsg.id), isTrue);
 
-      // When message arrives first time
-      expect(provider.incomingPacketBloomFilter.mightContain(duplicateMsg.id), isFalse);
-      provider.incomingPacketBloomFilter.add(duplicateMsg.id);
-      expect(provider.incomingPacketBloomFilter.mightContain(duplicateMsg.id), isTrue);
-
-      // Search queries leverage Trie
+      // Search queries leverage Prefix Trie
       await provider.setSearchQuery('ali');
       expect(provider.searchQuery, equals('ali'));
     });

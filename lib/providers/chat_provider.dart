@@ -13,7 +13,7 @@ import '../core/constants.dart';
 import '../core/crypto/crypto_service.dart';
 import '../core/database/app_database.dart';
 import '../core/database/models.dart';
-import '../core/dsa/bloom_filter.dart';
+import '../core/dsa/lru_cache.dart';
 import '../core/network/discovery_service.dart';
 import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
@@ -27,10 +27,9 @@ class ChatProvider extends ChangeNotifier {
   final SecurityService security = SecurityService();
   final _uuid = const Uuid();
 
-  // High-performance Bloom Filter for packet/message deduplication
-  final BloomFilter _incomingPacketBloomFilter = BloomFilter(capacity: 25000, falsePositiveRate: 0.005);
-  final Set<String> _seenMessageIds = {};
-  BloomFilter get incomingPacketBloomFilter => _incomingPacketBloomFilter;
+  // Bounded LRU Cache for 100% exact, zero-false-positive recent packet & message deduplication
+  final LruCache<String, bool> _recentMessageIdCache = LruCache(capacity: 10000);
+  LruCache<String, bool> get recentMessageIdCache => _recentMessageIdCache;
 
   late DiscoveryService discoveryService;
   late P2pServer server;
@@ -807,17 +806,18 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void _handleIncomingMessage(ChatMessage message) {
-    // Fast O(1) deduplication check using Bloom filter & exact set
-    if (_incomingPacketBloomFilter.mightContain(message.id)) {
-      if (_seenMessageIds.contains(message.id)) {
-        return; // Duplicate packet dropped
-      }
+    // 1. Exact O(1) recent packet deduplication (0% false positives, self-evicting, never saturates)
+    if (_recentMessageIdCache.containsKey(message.id)) {
+      return; // Exact duplicate recent packet dropped
     }
-    _incomingPacketBloomFilter.add(message.id);
-    _seenMessageIds.add(message.id);
-    if (_seenMessageIds.length > 5000) {
-      _seenMessageIds.remove(_seenMessageIds.first);
+
+    // 2. Authoritative check in database before discarding or processing
+    if (database.hasMessage(message.id)) {
+      _recentMessageIdCache.put(message.id, true);
+      return; // Message already persisted in database
     }
+
+    _recentMessageIdCache.put(message.id, true);
 
     // If we have active chat open with the sender, mark as read immediately
     if (_activePeer?.id == message.senderId) {
@@ -869,17 +869,18 @@ class ChatProvider extends ChangeNotifier {
     final group = database.getGroup(groupId);
     if (group == null) return;
 
-    // Fast O(1) deduplication check for group relays
-    if (_incomingPacketBloomFilter.mightContain(msg.id)) {
-      if (_seenMessageIds.contains(msg.id)) {
-        return; // Duplicate group relay dropped!
-      }
+    // 1. Exact O(1) recent packet deduplication (0% false positives)
+    if (_recentMessageIdCache.containsKey(msg.id)) {
+      return; // Exact duplicate group relay dropped!
     }
-    _incomingPacketBloomFilter.add(msg.id);
-    _seenMessageIds.add(msg.id);
-    if (_seenMessageIds.length > 5000) {
-      _seenMessageIds.remove(_seenMessageIds.first);
+
+    // 2. Authoritative check in database
+    if (database.hasMessage(msg.id)) {
+      _recentMessageIdCache.put(msg.id, true);
+      return; // Message already received and persisted
     }
+
+    _recentMessageIdCache.put(msg.id, true);
 
     database.saveMessage(msg);
     notifyListeners();

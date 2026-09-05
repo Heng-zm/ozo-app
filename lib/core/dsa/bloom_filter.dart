@@ -7,6 +7,13 @@ import 'dart:typed_data';
 /// False positive matches are possible with bounded probability [falsePositiveRate],
 /// but false negatives are impossible (0% false negative rate).
 ///
+/// CRITICAL ARCHITECTURAL RULE:
+/// Bloom filters are probabilistic. They can ONLY be used safely as a negative
+/// pre-filter to skip work ('definitely not present, skip lookup'). A positive
+/// match (`mightContain() == true`) must ALWAYS fall through to an authoritative
+/// check (e.g. SQLite or exact in-memory set) and MUST NEVER be used as the sole
+/// reason to discard or drop messages.
+///
 /// Uses Kirsch-Mitzenmacher double-hashing optimization:
 /// g_i(x) = (h1(x) + i * h2(x)) mod m
 class BloomFilter {
