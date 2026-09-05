@@ -797,22 +797,25 @@ class AppDatabase {
           .toList();
     }
 
-    try {
-      // First try FTS5 virtual table
-      final ftsRows = await _db!.rawQuery(
-        '''
-        SELECT m.* FROM messages m
-        JOIN messages_fts fts ON m.id = fts.id
-        WHERE messages_fts MATCH ?
-        ORDER BY m.timestamp DESC LIMIT 50;
-        ''',
-        ['*$trimmed*'],
-      );
-      if (ftsRows.isNotEmpty) {
-        return ftsRows.map((r) => _rowToChatMessage(r)).toList();
+    final sanitizedFts = trimmed.replaceAll(RegExp(r'["*^:()\[\]{}]'), ' ').trim();
+    if (sanitizedFts.isNotEmpty) {
+      try {
+        // First try FTS5 virtual table
+        final ftsRows = await _db!.rawQuery(
+          '''
+          SELECT m.* FROM messages m
+          JOIN messages_fts fts ON m.id = fts.id
+          WHERE messages_fts MATCH ?
+          ORDER BY m.timestamp DESC LIMIT 50;
+          ''',
+          ['"$sanitizedFts"*'],
+        );
+        if (ftsRows.isNotEmpty) {
+          return ftsRows.map((r) => _rowToChatMessage(r)).toList();
+        }
+      } catch (_) {
+        // Fallback to indexed LIKE query
       }
-    } catch (_) {
-      // Fallback to indexed LIKE query
     }
 
     final rows = await _db!.query(

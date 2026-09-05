@@ -99,42 +99,61 @@ class FileTransferManager extends ChangeNotifier {
   }) async {
     final transferId = metadata.transferId;
 
-    // Resolve download destination directory
+    // Resolve download destination directory & sanitize fileName to prevent path traversal
     final Directory downloadDir = await _getDownloadDirectory();
-    final destinationPath = p.join(downloadDir.path, metadata.fileName);
-    final destFile = File(destinationPath);
+    var safeFileName = p.basename(metadata.fileName).replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
+    if (safeFileName.trim().isEmpty) {
+      safeFileName = 'download_${metadata.transferId.substring(0, 8)}';
+    }
+
+    var destinationPath = p.join(downloadDir.path, safeFileName);
+    var destFile = File(destinationPath);
 
     int existingBytes = 0;
     if (await destFile.exists()) {
+      // Check if existing file is already the exact target file via SHA-256
+      try {
+        final existingHash = await _calculateFileSha256(destFile);
+        if (metadata.sha256.isNotEmpty && existingHash == metadata.sha256) {
+          metadata.localPath = destinationPath;
+          metadata.isCompleted = true;
+          await database.markFileCompleted(transferId, destinationPath);
+          _transfers[transferId] = FileTransferInfo(
+            transferId: transferId,
+            messageId: messageId,
+            fileName: safeFileName,
+            fileSize: metadata.fileSize,
+            bytesTransferred: metadata.fileSize,
+            localPath: destinationPath,
+            remoteIp: sender.ip,
+            remotePort: sender.port,
+            remotePublicKey: sender.publicKey,
+            direction: TransferDirection.download,
+            status: TransferStatus.completed,
+            sha256: metadata.sha256,
+          );
+          notifyListeners();
+          return;
+        }
+      } catch (_) {}
+
+      // If existing file is different or partially downloaded
       existingBytes = await destFile.length();
-      if (existingBytes >= metadata.fileSize) {
-        // Already fully downloaded
-        metadata.localPath = destinationPath;
-        metadata.isCompleted = true;
-        await database.markFileCompleted(transferId, destinationPath);
-        _transfers[transferId] = FileTransferInfo(
-          transferId: transferId,
-          messageId: messageId,
-          fileName: metadata.fileName,
-          fileSize: metadata.fileSize,
-          bytesTransferred: metadata.fileSize,
-          localPath: destinationPath,
-          remoteIp: sender.ip,
-          remotePort: sender.port,
-          remotePublicKey: sender.publicKey,
-          direction: TransferDirection.download,
-          status: TransferStatus.completed,
-          sha256: metadata.sha256,
-        );
-        notifyListeners();
-        return;
+      if (existingBytes > metadata.fileSize) {
+        // Stale or different file: allocate non-colliding destination path
+        final nameNoExt = p.basenameWithoutExtension(safeFileName);
+        final ext = p.extension(safeFileName);
+        safeFileName = '${nameNoExt}_${metadata.transferId.substring(0, 8)}$ext';
+        destinationPath = p.join(downloadDir.path, safeFileName);
+        destFile = File(destinationPath);
+        existingBytes = 0;
       }
     }
 
     final transferInfo = FileTransferInfo(
       transferId: transferId,
       messageId: messageId,
-      fileName: metadata.fileName,
+      fileName: safeFileName,
       fileSize: metadata.fileSize,
       bytesTransferred: existingBytes,
       localPath: destinationPath,
@@ -293,5 +312,16 @@ class FileTransferManager extends ChangeNotifier {
     final stream = file.openRead();
     final digest = await sha256.bind(stream).first;
     return digest.toString();
+  }
+
+  @override
+  void dispose() {
+    for (final client in _activeClients.values) {
+      try {
+        client.close(force: true);
+      } catch (_) {}
+    }
+    _activeClients.clear();
+    super.dispose();
   }
 }

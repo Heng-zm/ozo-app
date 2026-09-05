@@ -233,7 +233,9 @@ class DiscoveryService {
         lastSeen: DateTime.now(),
       );
 
-      _peerDiscoveredController.add(peer);
+      if (!_peerDiscoveredController.isClosed) {
+        _peerDiscoveredController.add(peer);
+      }
     } catch (_) {
       // Bad packet or non-JSON data ignored
     }

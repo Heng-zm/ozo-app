@@ -96,9 +96,16 @@ class CryptoService {
 
     final secretKey = await _getOrCreateSharedKey(senderPublicKeyBase64);
 
-    final cipherText = base64Decode(encryptedData['ct'] as String);
-    final nonce = base64Decode(encryptedData['nonce'] as String);
-    final macBytes = base64Decode(encryptedData['mac'] as String);
+    final ctStr = encryptedData['ct'] as String?;
+    final nonceStr = encryptedData['nonce'] as String?;
+    final macStr = encryptedData['mac'] as String?;
+    if (ctStr == null || nonceStr == null || macStr == null) {
+      throw const FormatException('Invalid encrypted payload: missing ct, nonce, or mac');
+    }
+
+    final cipherText = base64Decode(ctStr);
+    final nonce = base64Decode(nonceStr);
+    final macBytes = base64Decode(macStr);
 
     final secretBox = SecretBox(
       cipherText,
@@ -137,6 +144,10 @@ class CryptoService {
     required Uint8List encryptedData,
     required String senderPublicKeyBase64,
   }) async {
+    if (encryptedData.length < 28) {
+      throw const FormatException('Invalid encrypted chunk: payload length must be at least 28 bytes');
+    }
+
     if (_keyPair == null) await initialize();
 
     final secretKey = await _getOrCreateSharedKey(senderPublicKeyBase64);

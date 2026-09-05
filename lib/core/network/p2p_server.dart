@@ -30,6 +30,8 @@ class P2pServer {
 
   // Active WebSocket connections: peerId -> WebSocket
   final Map<String, WebSocket> _activeSockets = {};
+  // All opened WebSockets (including pre-auth)
+  final Set<WebSocket> _openWebSockets = {};
 
   // Active files available for download: transferId -> File
   final Map<String, File> _sharedFiles = {};
@@ -335,8 +337,9 @@ class P2pServer {
     request.response.headers.contentType = ContentType.binary;
     request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
 
+    RandomAccessFile? raf;
     try {
-      final raf = await file.open(mode: FileMode.read);
+      raf = await file.open(mode: FileMode.read);
       await raf.setPosition(startByte);
 
       int bytesRemaining = contentLength;
@@ -351,16 +354,16 @@ class P2pServer {
         await request.response.flush();
         bytesRemaining -= chunk.length;
       }
-
-      await raf.close();
     } catch (e) {
       if (kDebugMode) print('Error streaming file: $e');
     } finally {
+      await raf?.close();
       await request.response.close();
     }
   }
 
   void _handleWebSocket(WebSocket socket, String remoteIp) {
+    _openWebSockets.add(socket);
     String? peerId;
 
     socket.listen(
@@ -460,11 +463,13 @@ class P2pServer {
         }
       },
       onDone: () {
+        _openWebSockets.remove(socket);
         if (peerId != null) {
           _activeSockets.remove(peerId);
         }
       },
       onError: (err) {
+        _openWebSockets.remove(socket);
         if (peerId != null) {
           _activeSockets.remove(peerId);
         }
@@ -630,11 +635,12 @@ class P2pServer {
   }
 
   Future<void> stop() async {
-    for (final socket in _activeSockets.values) {
+    for (final socket in _openWebSockets) {
       try {
         await socket.close();
       } catch (_) {}
     }
+    _openWebSockets.clear();
     _activeSockets.clear();
     _sharedFiles.clear();
 
