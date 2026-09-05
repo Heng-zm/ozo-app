@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import '../constants.dart';
 
-enum MessageType { text, file, image, voice }
+enum MessageType { text, file, image, voice, sticker }
 enum MessageStatus { pending, sent, delivered, read, failed }
 enum TransferDirection { upload, download }
 enum TransferStatus { offered, transferring, paused, completed, failed }
@@ -437,6 +437,7 @@ class ChatMessage {
   }
 
   bool get isVoice => type == MessageType.voice;
+  bool get isSticker => type == MessageType.sticker;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -631,3 +632,196 @@ class FileTransferInfo {
   double get progress =>
       fileSize > 0 ? (bytesTransferred / fileSize).clamp(0.0, 1.0) : 0.0;
 }
+
+/// Represents an individual expressive sticker
+class StickerData {
+  final String id;
+  final String packId;
+  final String name;
+  final String emoji;
+  final String assetPath;
+
+  const StickerData({
+    required this.id,
+    required this.packId,
+    required this.name,
+    required this.emoji,
+    this.assetPath = '',
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'packId': packId,
+        'name': name,
+        'emoji': emoji,
+        'assetPath': assetPath,
+      };
+
+  factory StickerData.fromJson(Map<String, dynamic> json) => StickerData(
+        id: json['id'] as String,
+        packId: json['packId'] as String,
+        name: json['name'] as String,
+        emoji: json['emoji'] as String,
+        assetPath: json['assetPath'] as String? ?? '',
+      );
+}
+
+/// Represents a collection of themed stickers
+class StickerPack {
+  final String id;
+  final String name;
+  final String icon;
+  final List<StickerData> stickers;
+
+  const StickerPack({
+    required this.id,
+    required this.name,
+    required this.icon,
+    required this.stickers,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'icon': icon,
+        'stickers': stickers.map((s) => s.toJson()).toList(),
+      };
+
+  factory StickerPack.fromJson(Map<String, dynamic> json) => StickerPack(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        icon: json['icon'] as String,
+        stickers: (json['stickers'] as List<dynamic>?)
+                ?.map((s) => StickerData.fromJson(s as Map<String, dynamic>))
+                .toList() ??
+            [],
+      );
+}
+
+/// Security & App Lock settings
+class SecuritySettings {
+  final bool isPinEnabled;
+  final String pinHash;
+  final String pinSalt;
+  final int autoLockMinutes; // 0 = immediately, 1, 5, 15, -1 = never
+  final bool isBiometricEnabled;
+
+  const SecuritySettings({
+    this.isPinEnabled = false,
+    this.pinHash = '',
+    this.pinSalt = '',
+    this.autoLockMinutes = 5,
+    this.isBiometricEnabled = false,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'isPinEnabled': isPinEnabled,
+        'pinHash': pinHash,
+        'pinSalt': pinSalt,
+        'autoLockMinutes': autoLockMinutes,
+        'isBiometricEnabled': isBiometricEnabled,
+      };
+
+  factory SecuritySettings.fromJson(Map<String, dynamic> json) =>
+      SecuritySettings(
+        isPinEnabled: json['isPinEnabled'] as bool? ?? false,
+        pinHash: json['pinHash'] as String? ?? '',
+        pinSalt: json['pinSalt'] as String? ?? '',
+        autoLockMinutes: json['autoLockMinutes'] as int? ?? 5,
+        isBiometricEnabled: json['isBiometricEnabled'] as bool? ?? false,
+      );
+
+  SecuritySettings copyWith({
+    bool? isPinEnabled,
+    String? pinHash,
+    String? pinSalt,
+    int? autoLockMinutes,
+    bool? isBiometricEnabled,
+  }) =>
+      SecuritySettings(
+        isPinEnabled: isPinEnabled ?? this.isPinEnabled,
+        pinHash: pinHash ?? this.pinHash,
+        pinSalt: pinSalt ?? this.pinSalt,
+        autoLockMinutes: autoLockMinutes ?? this.autoLockMinutes,
+        isBiometricEnabled: isBiometricEnabled ?? this.isBiometricEnabled,
+      );
+}
+
+/// Companion or secondary device linked to the primary account
+class LinkedDevice {
+  final String id;
+  final String name;
+  final String platform;
+  final String publicKey;
+  final DateTime linkedAt;
+  DateTime lastSeen;
+
+  LinkedDevice({
+    required this.id,
+    required this.name,
+    required this.platform,
+    required this.publicKey,
+    required this.linkedAt,
+    DateTime? lastSeen,
+  }) : lastSeen = lastSeen ?? DateTime.now();
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'platform': platform,
+        'publicKey': publicKey,
+        'linkedAt': linkedAt.toIso8601String(),
+        'lastSeen': lastSeen.toIso8601String(),
+      };
+
+  factory LinkedDevice.fromJson(Map<String, dynamic> json) => LinkedDevice(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        platform: json['platform'] as String? ?? 'unknown',
+        publicKey: json['publicKey'] as String? ?? '',
+        linkedAt: json['linkedAt'] != null
+            ? DateTime.parse(json['linkedAt'] as String)
+            : DateTime.now(),
+        lastSeen: json['lastSeen'] != null
+            ? DateTime.parse(json['lastSeen'] as String)
+            : DateTime.now(),
+      );
+}
+
+/// Metadata for Direct Hotspot & Zero-Config pairing
+class DirectHotspotInfo {
+  final String ssid;
+  final String ip;
+  final int port;
+  final String deviceId;
+  final String deviceName;
+
+  const DirectHotspotInfo({
+    required this.ssid,
+    required this.ip,
+    required this.port,
+    required this.deviceId,
+    required this.deviceName,
+  });
+
+  String toUriString() =>
+      'ozo://hotspot?id=$deviceId&name=${Uri.encodeComponent(deviceName)}&ip=$ip&port=$port&ssid=${Uri.encodeComponent(ssid)}';
+
+  static DirectHotspotInfo? parse(String input) {
+    try {
+      final uri = Uri.parse(input.trim());
+      if (uri.scheme == 'ozo' && uri.host == 'hotspot') {
+        final q = uri.queryParameters;
+        return DirectHotspotInfo(
+          ssid: q['ssid'] ?? 'OZO-Hotspot',
+          ip: q['ip'] ?? '',
+          port: int.tryParse(q['port'] ?? '') ?? 45455,
+          deviceId: q['id'] ?? '',
+          deviceName: q['name'] ?? 'Hotspot Device',
+        );
+      }
+    } catch (_) {}
+    return null;
+  }
+}
+

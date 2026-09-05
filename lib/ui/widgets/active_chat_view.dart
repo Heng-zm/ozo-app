@@ -9,6 +9,7 @@ import '../theme/app_theme.dart';
 import 'call_screen.dart';
 import 'chat_bubble.dart';
 import 'safety_number_dialog.dart';
+import 'sticker_picker_sheet.dart';
 
 class ActiveChatView extends StatefulWidget {
   final Peer? peer;
@@ -29,13 +30,18 @@ class ActiveChatView extends StatefulWidget {
 class _ActiveChatViewState extends State<ActiveChatView> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final TextEditingController _inChatSearchController = TextEditingController();
   bool _isComposing = false;
   bool _isDragging = false;
+  bool _isSearchingInChat = false;
+  int _searchMatchIndex = 0;
+  List<int> _matchedIndices = [];
 
   @override
   void dispose() {
     _textController.dispose();
     _scrollController.dispose();
+    _inChatSearchController.dispose();
     super.dispose();
   }
 
@@ -77,6 +83,8 @@ class _ActiveChatViewState extends State<ActiveChatView> {
 
     final isOnline = isGroup ? provider.isGroupHostOnline : peer!.isOnline;
     final isTyping = !isGroup && provider.isPeerTyping(peer!.id);
+    final chatId = isGroup ? group!.id : peer!.id;
+    final pinnedMsg = provider.getPinnedMessage(chatId);
 
     _scrollToBottom();
 
@@ -132,6 +140,30 @@ class _ActiveChatViewState extends State<ActiveChatView> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Search in Chat',
+            icon: Icon(
+              _isSearchingInChat
+                  ? Icons.search_off_rounded
+                  : Icons.search_rounded,
+              size: 22,
+            ),
+            onPressed: () {
+              setState(() {
+                _isSearchingInChat = !_isSearchingInChat;
+                if (!_isSearchingInChat) {
+                  _inChatSearchController.clear();
+                  _matchedIndices = [];
+                  _searchMatchIndex = 0;
+                }
+              });
+            },
+          ),
+          IconButton(
+            tooltip: 'Jump to Date',
+            icon: const Icon(Icons.calendar_today_rounded, size: 20),
+            onPressed: () => _jumpToDate(context, messages),
+          ),
           if (!isGroup) ...[
             IconButton(
               tooltip: 'Voice Call',
@@ -175,6 +207,10 @@ class _ActiveChatViewState extends State<ActiveChatView> {
           children: [
             Column(
               children: [
+                if (_isSearchingInChat)
+                  _buildInChatSearchBar(context, messages),
+                if (pinnedMsg != null)
+                  _buildPinnedBanner(context, provider, pinnedMsg, messages),
                 // Banner
                 if (isGroup && !isOnline)
                   Container(
@@ -465,6 +501,12 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 tooltip: 'Send File / Media',
                 onPressed: () => provider.pickAndSendFile(),
               ),
+            IconButton(
+              icon: const Icon(Icons.sticky_note_2_outlined),
+              color: Colors.grey.shade600,
+              tooltip: 'Stickers',
+              onPressed: isReadOnly ? null : () => _openStickerPicker(context, provider),
+            ),
             Expanded(
               child: TextField(
                 controller: _textController,
@@ -565,5 +607,239 @@ class _ActiveChatViewState extends State<ActiveChatView> {
         ],
       ),
     );
+  }
+
+  void _openStickerPicker(BuildContext context, ChatProvider provider) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => StickerPickerSheet(
+        onStickerSelected: (sticker) {
+          final chatId = widget.group?.id ?? widget.peer?.id;
+          if (chatId != null) {
+            provider.sendStickerMessage(chatId, sticker);
+          }
+        },
+      ),
+    );
+  }
+
+  Widget _buildPinnedBanner(
+    BuildContext context,
+    ChatProvider provider,
+    ChatMessage pinnedMsg,
+    List<ChatMessage> messages,
+  ) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final chatId = widget.group?.id ?? widget.peer?.id ?? '';
+
+    return InkWell(
+      onTap: () {
+        final index = messages.indexWhere((m) => m.id == pinnedMsg.id);
+        if (index != -1 && _scrollController.hasClients) {
+          final target = index * 80.0;
+          _scrollController.animateTo(
+            target.clamp(0.0, _scrollController.position.maxScrollExtent),
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1E293B) : Colors.white,
+          border: Border(
+            bottom: BorderSide(
+              color: isDark ? Colors.white10 : Colors.black12,
+            ),
+            left: const BorderSide(
+              color: TelegramTheme.primaryBlue,
+              width: 3.5,
+            ),
+          ),
+        ),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.push_pin_rounded,
+              color: TelegramTheme.primaryBlue,
+              size: 18,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Pinned Message • ${pinnedMsg.senderName}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: TelegramTheme.primaryBlue,
+                    ),
+                  ),
+                  Text(
+                    pinnedMsg.content,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isDark ? Colors.white70 : Colors.black87,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, size: 18),
+              onPressed: () => provider.unpinMessage(chatId),
+              tooltip: 'Unpin Message',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInChatSearchBar(
+      BuildContext context, List<ChatMessage> messages) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      color: isDark ? const Color(0xFF1E293B) : Colors.grey.shade200,
+      child: Row(
+        children: [
+          const Icon(Icons.search_rounded, size: 20, color: Colors.grey),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: _inChatSearchController,
+              decoration: const InputDecoration(
+                hintText: 'Search in this chat...',
+                border: InputBorder.none,
+                isDense: true,
+              ),
+              onChanged: (val) {
+                setState(() {
+                  if (val.trim().isEmpty) {
+                    _matchedIndices = [];
+                    _searchMatchIndex = 0;
+                  } else {
+                    final q = val.toLowerCase();
+                    _matchedIndices = [];
+                    for (var i = 0; i < messages.length; i++) {
+                      if (messages[i].content.toLowerCase().contains(q)) {
+                        _matchedIndices.add(i);
+                      }
+                    }
+                    _searchMatchIndex = 0;
+                    if (_matchedIndices.isNotEmpty) {
+                      _jumpToMatch(messages);
+                    }
+                  }
+                });
+              },
+            ),
+          ),
+          if (_matchedIndices.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Text(
+                '${_searchMatchIndex + 1} of ${_matchedIndices.length}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+          IconButton(
+            icon: const Icon(Icons.keyboard_arrow_up_rounded, size: 20),
+            onPressed: _matchedIndices.isNotEmpty
+                ? () {
+                    setState(() {
+                      if (_searchMatchIndex > 0) {
+                        _searchMatchIndex--;
+                      } else {
+                        _searchMatchIndex = _matchedIndices.length - 1;
+                      }
+                    });
+                    _jumpToMatch(messages);
+                  }
+                : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+            onPressed: _matchedIndices.isNotEmpty
+                ? () {
+                    setState(() {
+                      if (_searchMatchIndex < _matchedIndices.length - 1) {
+                        _searchMatchIndex++;
+                      } else {
+                        _searchMatchIndex = 0;
+                      }
+                    });
+                    _jumpToMatch(messages);
+                  }
+                : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.close_rounded, size: 20),
+            onPressed: () {
+              setState(() {
+                _isSearchingInChat = false;
+                _inChatSearchController.clear();
+                _matchedIndices = [];
+                _searchMatchIndex = 0;
+              });
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _jumpToMatch(List<ChatMessage> messages) {
+    if (_matchedIndices.isEmpty) return;
+    final matchIdx = _matchedIndices[_searchMatchIndex];
+    if (_scrollController.hasClients) {
+      final target = matchIdx * 80.0;
+      _scrollController.animateTo(
+        target.clamp(0.0, _scrollController.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  Future<void> _jumpToDate(
+      BuildContext context, List<ChatMessage> messages) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+    );
+    if (picked != null) {
+      final index = messages.indexWhere((m) {
+        return m.timestamp.year == picked.year &&
+            m.timestamp.month == picked.month &&
+            m.timestamp.day == picked.day;
+      });
+      if (index != -1 && _scrollController.hasClients) {
+        final target = index * 80.0;
+        _scrollController.animateTo(
+          target.clamp(0.0, _scrollController.position.maxScrollExtent),
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No messages found on this date.')),
+          );
+        }
+      }
+    }
   }
 }

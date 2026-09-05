@@ -388,6 +388,94 @@ class P2pClient {
     }
   }
 
+  /// Sends device pairing credentials
+  Future<bool> sendDevicePairing(
+    Peer peer, {
+    required String id,
+    required String name,
+    required String platform,
+    required String pubKey,
+  }) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return false;
+    try {
+      socket.add(jsonEncode({
+        'type': 'DEVICE_PAIR',
+        'id': id,
+        'name': name,
+        'platform': platform,
+        'pubKey': pubKey,
+        'senderId': deviceId,
+      }));
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
+      return false;
+    }
+  }
+
+  /// Transmits encrypted database backup for device-to-device migration
+  Future<bool> sendBackupMigration(
+    Peer peer,
+    Map<String, dynamic> backup,
+  ) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return false;
+    try {
+      socket.add(jsonEncode({
+        'type': 'BACKUP_TRANSFER',
+        'backup': backup,
+        'senderId': deviceId,
+      }));
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
+      return false;
+    }
+  }
+
+  /// Broadcasts a pinned message event to chat recipient
+  Future<bool> sendPinMessage(
+    Peer peer, {
+    required String chatId,
+    required String messageId,
+  }) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return false;
+    try {
+      socket.add(jsonEncode({
+        'type': 'MESSAGE_PIN',
+        'chatId': chatId,
+        'messageId': messageId,
+        'senderId': deviceId,
+      }));
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
+      return false;
+    }
+  }
+
+  /// Broadcasts an unpinned message event to chat recipient
+  Future<bool> sendUnpinMessage(
+    Peer peer, {
+    required String chatId,
+  }) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return false;
+    try {
+      socket.add(jsonEncode({
+        'type': 'MESSAGE_UNPIN',
+        'chatId': chatId,
+        'senderId': deviceId,
+      }));
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
+      return false;
+    }
+  }
+
   void close() {
     for (final s in _sockets.values) {
       try {

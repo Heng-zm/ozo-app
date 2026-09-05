@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -16,12 +17,13 @@ class AppDatabase {
 
   sqflite.Database? _db;
 
-  // In-memory hot cache for instant UI rendering & zero latency
   final List<ChatMessage> _messages = [];
   final Map<String, Peer> _knownPeers = {};
   final Map<String, String> _pinnedKeys = {}; // deviceId -> originalPublicKey
   final Map<String, GroupChat> _groups = {};
   final List<UserAccount> _accounts = [];
+  final Map<String, String> _pinnedChatMessages = {}; // chatId -> messageId
+  final List<LinkedDevice> _linkedDevices = [];
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
   Map<String, Peer> get knownPeers => Map.unmodifiable(_knownPeers);
@@ -33,6 +35,8 @@ class AppDatabase {
       return b.createdAt.compareTo(a.createdAt);
     });
   List<UserAccount> get accounts => List.unmodifiable(_accounts);
+  Map<String, String> get pinnedChatMessages => Map.unmodifiable(_pinnedChatMessages);
+  List<LinkedDevice> get linkedDevices => List.unmodifiable(_linkedDevices);
 
   UserAccount? get currentAccount {
     try {
@@ -77,18 +81,43 @@ class AppDatabase {
       await _db!.execute('PRAGMA synchronous=NORMAL;');
     } catch (_) {}
 
+    // Ensure auxiliary tables exist
+    await _createAuxiliaryTables(_db!);
+
     // Load in-memory caches from SQLite
     await _loadAccountsFromDb();
     await _loadPinnedKeysFromDb();
     await _loadPeersFromDb();
     await _loadGroupsFromDb();
     await _loadMessagesFromDb();
+    await _loadPinnedChatMessagesFromDb();
+    await _loadLinkedDevicesFromDb();
 
     // Check if legacy JSON files exist and import them if SQLite is fresh
     await _migrateLegacyJsonIfPresent(dbDir);
   }
 
+  Future<void> _createAuxiliaryTables(sqflite.Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS chat_pinned_messages (
+        chat_id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL
+      );
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS linked_devices (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        platform TEXT,
+        public_key TEXT,
+        linked_at INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL
+      );
+    ''');
+  }
+
   Future<void> _onCreate(sqflite.Database db, int version) async {
+    await _createAuxiliaryTables(db);
     // Accounts Table
     await db.execute('''
       CREATE TABLE IF NOT EXISTS accounts (
@@ -733,6 +762,244 @@ class AppDatabase {
         }
       }
     } catch (_) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pinned Chat Messages
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadPinnedChatMessagesFromDb() async {
+    if (_db == null) return;
+    try {
+      final rows = await _db!.query('chat_pinned_messages');
+      _pinnedChatMessages.clear();
+      for (final row in rows) {
+        _pinnedChatMessages[row['chat_id'] as String] =
+            row['message_id'] as String;
+      }
+    } catch (_) {}
+  }
+
+  String? getPinnedMessageId(String chatId) => _pinnedChatMessages[chatId];
+
+  ChatMessage? getPinnedMessage(String chatId) {
+    final msgId = _pinnedChatMessages[chatId];
+    if (msgId == null) return null;
+    try {
+      return _messages.firstWhere((m) =>
+          m.id == msgId &&
+          (m.chatId == chatId || (m.isGroup && m.groupId == chatId)));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> pinChatMessage(String chatId, String messageId) async {
+    _pinnedChatMessages[chatId] = messageId;
+    if (_db != null && _db!.isOpen) {
+      await _db!.insert(
+        'chat_pinned_messages',
+        {'chat_id': chatId, 'message_id': messageId},
+        conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
+      );
+    }
+  }
+
+  Future<void> unpinChatMessage(String chatId) async {
+    _pinnedChatMessages.remove(chatId);
+    if (_db != null && _db!.isOpen) {
+      await _db!.delete(
+        'chat_pinned_messages',
+        where: 'chat_id = ?',
+        whereArgs: [chatId],
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Linked Devices
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadLinkedDevicesFromDb() async {
+    if (_db == null) return;
+    try {
+      final rows =
+          await _db!.query('linked_devices', orderBy: 'last_seen DESC');
+      _linkedDevices.clear();
+      for (final row in rows) {
+        _linkedDevices.add(LinkedDevice(
+          id: row['id'] as String,
+          name: row['name'] as String,
+          platform: row['platform'] as String? ?? 'unknown',
+          publicKey: row['public_key'] as String? ?? '',
+          linkedAt:
+              DateTime.fromMillisecondsSinceEpoch(row['linked_at'] as int),
+          lastSeen:
+              DateTime.fromMillisecondsSinceEpoch(row['last_seen'] as int),
+        ));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> saveLinkedDevice(LinkedDevice device) async {
+    _linkedDevices.removeWhere((d) => d.id == device.id);
+    _linkedDevices.insert(0, device);
+    if (_db != null && _db!.isOpen) {
+      await _db!.insert(
+        'linked_devices',
+        {
+          'id': device.id,
+          'name': device.name,
+          'platform': device.platform,
+          'public_key': device.publicKey,
+          'linked_at': device.linkedAt.millisecondsSinceEpoch,
+          'last_seen': device.lastSeen.millisecondsSinceEpoch,
+        },
+        conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
+      );
+    }
+  }
+
+  Future<void> deleteLinkedDevice(String id) async {
+    _linkedDevices.removeWhere((d) => d.id == id);
+    if (_db != null && _db!.isOpen) {
+      await _db!.delete(
+        'linked_devices',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Encrypted Backup & Restore
+  // ---------------------------------------------------------------------------
+
+  Future<Map<String, dynamic>> exportEncryptedBackup(String password) async {
+    final backupData = {
+      'version': 1,
+      'exported_at': DateTime.now().toIso8601String(),
+      'accounts': _accounts.map((a) => a.toJson()).toList(),
+      'peers': _knownPeers.values.map((p) => p.toJson()).toList(),
+      'groups': _groups.values.map((g) => g.toJson()).toList(),
+      'pinned_keys': _pinnedKeys,
+      'pinned_chat_messages': _pinnedChatMessages,
+      'messages': _messages.map((m) => m.toJson()).toList(),
+      'linked_devices': _linkedDevices.map((d) => d.toJson()).toList(),
+    };
+
+    final rawJson = jsonEncode(backupData);
+    final rawBytes = utf8.encode(rawJson);
+    final checksum = sha256.convert(rawBytes).toString();
+
+    final salt = 'ozo_vault_salt_v1';
+    final keyBytes = sha256.convert(utf8.encode('$password:$salt')).bytes;
+    final encryptedBytes = _encryptBackupBytes(rawBytes, keyBytes);
+
+    return {
+      'format': 'ozobackup',
+      'version': 1,
+      'salt': salt,
+      'checksum': checksum,
+      'payload': base64Encode(encryptedBytes),
+    };
+  }
+
+  Future<bool> importEncryptedBackup(
+      Map<String, dynamic> container, String password) async {
+    try {
+      if (container['format'] != 'ozobackup') return false;
+      final salt = container['salt'] as String? ?? 'ozo_vault_salt_v1';
+      final expectedChecksum = container['checksum'] as String;
+      final payloadBase64 = container['payload'] as String;
+
+      final keyBytes = sha256.convert(utf8.encode('$password:$salt')).bytes;
+      final encryptedBytes = base64Decode(payloadBase64);
+      final decryptedBytes = _decryptBackupBytes(encryptedBytes, keyBytes);
+
+      final actualChecksum = sha256.convert(decryptedBytes).toString();
+      if (actualChecksum != expectedChecksum) {
+        return false;
+      }
+
+      final jsonStr = utf8.decode(decryptedBytes);
+      final Map<String, dynamic> data = jsonDecode(jsonStr);
+
+      if (data['accounts'] is List) {
+        for (final a in data['accounts']) {
+          await saveAccount(UserAccount.fromJson(a as Map<String, dynamic>));
+        }
+      }
+
+      if (data['peers'] is List) {
+        for (final p in data['peers']) {
+          await savePeer(Peer.fromJson(p as Map<String, dynamic>));
+        }
+      }
+
+      if (data['groups'] is List) {
+        for (final g in data['groups']) {
+          await saveGroup(GroupChat.fromJson(g as Map<String, dynamic>));
+        }
+      }
+
+      if (data['pinned_keys'] is Map) {
+        final Map<String, dynamic> pk = data['pinned_keys'];
+        for (final entry in pk.entries) {
+          await _persistPinnedKey(entry.key, entry.value.toString());
+          _pinnedKeys[entry.key] = entry.value.toString();
+        }
+      }
+
+      if (data['pinned_chat_messages'] is Map) {
+        final Map<String, dynamic> pcm = data['pinned_chat_messages'];
+        for (final entry in pcm.entries) {
+          await pinChatMessage(entry.key, entry.value.toString());
+        }
+      }
+
+      if (data['messages'] is List) {
+        for (final m in data['messages']) {
+          await saveMessage(ChatMessage.fromJson(m as Map<String, dynamic>));
+        }
+      }
+
+      if (data['linked_devices'] is List) {
+        for (final d in data['linked_devices']) {
+          await saveLinkedDevice(
+              LinkedDevice.fromJson(d as Map<String, dynamic>));
+        }
+      }
+
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Uint8List _encryptBackupBytes(List<int> input, List<int> key) {
+    final out = Uint8List(input.length);
+    var blockIndex = 0;
+    var keystream = <int>[];
+    for (var i = 0; i < input.length; i++) {
+      final subIndex = i % 32;
+      if (subIndex == 0) {
+        keystream = sha256.convert([
+          ...key,
+          blockIndex >> 24,
+          blockIndex >> 16,
+          blockIndex >> 8,
+          blockIndex & 0xFF
+        ]).bytes;
+        blockIndex++;
+      }
+      out[i] = input[i] ^ keystream[subIndex];
+    }
+    return out;
+  }
+
+  static Uint8List _decryptBackupBytes(List<int> input, List<int> key) {
+    return _encryptBackupBytes(input, key);
   }
 
   /// Closes database connection and releases file locks

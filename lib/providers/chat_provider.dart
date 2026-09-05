@@ -16,12 +16,14 @@ import '../core/database/models.dart';
 import '../core/network/discovery_service.dart';
 import '../core/network/p2p_client.dart';
 import '../core/network/p2p_server.dart';
+import '../core/security/security_service.dart';
 import '../core/transfers/file_transfer_manager.dart';
 
 /// Central provider orchestrating discovery, messaging, encryption, groups, and transfers
 class ChatProvider extends ChangeNotifier {
   final CryptoService cryptoService = CryptoService();
   final AppDatabase database = AppDatabase();
+  final SecurityService security = SecurityService();
   final _uuid = const Uuid();
 
   late DiscoveryService discoveryService;
@@ -107,6 +109,7 @@ class ChatProvider extends ChangeNotifier {
   Peer? get activePeer => _activePeer;
   GroupChat? get activeGroup => _activeGroup;
   bool get isGroupSelected => _activeGroup != null;
+  List<Peer> get discoveredPeers => database.knownPeers.values.toList();
 
   bool get isGroupHostOnline {
     if (_activeGroup == null) return true;
@@ -201,8 +204,9 @@ class ChatProvider extends ChangeNotifier {
     // 1. Initialize Cryptography
     await cryptoService.initialize();
 
-    // 2. Initialize Persistent Database
+    // 2. Initialize Persistent Database & Security
     await database.initialize();
+    await security.initialize();
 
     // Ensure account exists
     if (database.accounts.isEmpty) {
@@ -258,6 +262,10 @@ class ChatProvider extends ChangeNotifier {
     server.onReactionReceived = _handleIncomingReaction;
     server.onMessageDeleted = _handleIncomingMessageDeleted;
     server.onCallSignaling = _handleIncomingCallSignaling;
+    server.onDevicePaired = _handleDevicePaired;
+    server.onBackupReceived = _handleBackupReceived;
+    server.onMessagePinned = _handleMessagePinned;
+    server.onMessageUnpinned = _handleMessageUnpinned;
 
     // Hook client duplex callbacks
     client.onDeliveryReceipt = _handleDeliveryReceipt;
@@ -880,6 +888,25 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  void _handleDevicePaired(LinkedDevice device) {
+    database.saveLinkedDevice(device);
+    notifyListeners();
+  }
+
+  void _handleBackupReceived(Map<String, dynamic> backup) {
+    notifyListeners();
+  }
+
+  void _handleMessagePinned(String chatId, String messageId) {
+    database.pinChatMessage(chatId, messageId);
+    notifyListeners();
+  }
+
+  void _handleMessageUnpinned(String chatId) {
+    database.unpinChatMessage(chatId);
+    notifyListeners();
+  }
+
   Future<void> updateDeviceName(String newName) async {
     if (newName.trim().isEmpty) return;
     _deviceName = newName.trim();
@@ -1228,6 +1255,153 @@ class ChatProvider extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pinned Messages
+  // ---------------------------------------------------------------------------
+
+  ChatMessage? getPinnedMessage(String chatId) => database.getPinnedMessage(chatId);
+  String? getPinnedMessageId(String chatId) => database.getPinnedMessageId(chatId);
+
+  Future<void> pinMessage(String chatId, String messageId) async {
+    await database.pinChatMessage(chatId, messageId);
+    final peer = database.knownPeers[chatId];
+    if (peer != null) {
+      client.sendPinMessage(peer, chatId: chatId, messageId: messageId);
+    }
+    notifyListeners();
+  }
+
+  Future<void> unpinMessage(String chatId) async {
+    await database.unpinChatMessage(chatId);
+    final peer = database.knownPeers[chatId];
+    if (peer != null) {
+      client.sendUnpinMessage(peer, chatId: chatId);
+    }
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stickers
+  // ---------------------------------------------------------------------------
+
+  Future<void> sendStickerMessage(String recipientId, StickerData sticker) async {
+    final messageId = _uuid.v4();
+    final message = ChatMessage(
+      id: messageId,
+      chatId: recipientId,
+      senderId: _deviceId,
+      senderName: _deviceName,
+      recipientId: recipientId,
+      content: sticker.emoji,
+      type: MessageType.sticker,
+      timestamp: DateTime.now(),
+      status: MessageStatus.pending,
+      isGroup: _activeGroup != null,
+      groupId: _activeGroup?.id,
+    );
+
+    await database.saveMessage(message);
+    notifyListeners();
+
+    if (_activeGroup != null) {
+      final group = _activeGroup!;
+      if (group.hostId == _deviceId) {
+        for (final mId in group.memberIds) {
+          if (mId == _deviceId) continue;
+          final p = database.knownPeers[mId];
+          if (p != null && p.isOnline) {
+            await client.relayGroupMessage(memberPeer: p, group: group, message: message);
+          }
+        }
+      } else {
+        final hostPeer = database.knownPeers[group.hostId];
+        if (hostPeer != null && hostPeer.isOnline) {
+          await client.sendGroupMessage(hostPeer: hostPeer, group: group, message: message);
+        }
+      }
+      return;
+    }
+
+    final peer = database.knownPeers[recipientId];
+    if (peer != null) {
+      final sent = await client.sendMessage(
+        peer: peer,
+        message: message,
+      );
+      if (sent) {
+        message.status = MessageStatus.sent;
+        await database.saveMessage(message);
+        notifyListeners();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Routerless Direct Hotspot Info
+  // ---------------------------------------------------------------------------
+
+  Future<DirectHotspotInfo> getDirectHotspotInfo() async {
+    final ip = await discoveryService.getLocalIpAddress();
+    return DirectHotspotInfo(
+      ssid: 'OZO-${_deviceName.replaceAll(' ', '_')}',
+      ip: ip,
+      port: server.port,
+      deviceId: _deviceId,
+      deviceName: _deviceName,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Linked Devices
+  // ---------------------------------------------------------------------------
+
+  List<LinkedDevice> get linkedDevices => database.linkedDevices;
+
+  Future<void> pairWithPeer(Peer peer) async {
+    final dev = LinkedDevice(
+      id: peer.id,
+      name: peer.name,
+      platform: peer.platform,
+      publicKey: peer.publicKey,
+      linkedAt: DateTime.now(),
+    );
+    await database.saveLinkedDevice(dev);
+    await client.sendDevicePairing(
+      peer,
+      id: _deviceId,
+      name: _deviceName,
+      platform: _platform,
+      pubKey: cryptoService.publicKeyBase64 ?? '',
+    );
+    notifyListeners();
+  }
+
+  Future<void> removeLinkedDevice(String id) async {
+    await database.deleteLinkedDevice(id);
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Encrypted Backup & Migration
+  // ---------------------------------------------------------------------------
+
+  Future<Map<String, dynamic>> exportBackup(String password) async {
+    return database.exportEncryptedBackup(password);
+  }
+
+  Future<bool> importBackup(Map<String, dynamic> container, String password) async {
+    final success = await database.importEncryptedBackup(container, password);
+    if (success) {
+      notifyListeners();
+    }
+    return success;
+  }
+
+  Future<bool> migrateToPeer(Peer peer, String password) async {
+    final backup = await database.exportEncryptedBackup(password);
+    return client.sendBackupMigration(peer, backup);
   }
 
   @override

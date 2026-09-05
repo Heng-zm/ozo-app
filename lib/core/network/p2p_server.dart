@@ -43,6 +43,10 @@ class P2pServer {
   ReactionCallback? onReactionReceived;
   DeleteMessageCallback? onMessageDeleted;
   CallSignalingCallback? onCallSignaling;
+  void Function(LinkedDevice device)? onDevicePaired;
+  void Function(Map<String, dynamic> backupData)? onBackupReceived;
+  void Function(String chatId, String messageId)? onMessagePinned;
+  void Function(String chatId)? onMessageUnpinned;
 
   int get port => _actualPort;
 
@@ -268,6 +272,29 @@ class P2pServer {
               final newBackupHostId = msg['newBackupHostId'] as String?;
               final newBackupHostName = msg['newBackupHostName'] as String?;
               onGroupMigrated?.call(groupId, newHostId, newHostName, newBackupHostId, newBackupHostName);
+              break;
+            case 'DEVICE_PAIR':
+              final dev = LinkedDevice(
+                id: msg['id'] as String,
+                name: msg['name'] as String,
+                platform: msg['platform'] as String? ?? 'unknown',
+                publicKey: msg['pubKey'] as String? ?? '',
+                linkedAt: DateTime.now(),
+              );
+              onDevicePaired?.call(dev);
+              break;
+            case 'BACKUP_TRANSFER':
+              final backup = msg['backup'] as Map<String, dynamic>;
+              onBackupReceived?.call(backup);
+              break;
+            case 'MESSAGE_PIN':
+              final chatId = msg['chatId'] as String;
+              final messageId = msg['messageId'] as String;
+              onMessagePinned?.call(chatId, messageId);
+              break;
+            case 'MESSAGE_UNPIN':
+              final chatId = msg['chatId'] as String;
+              onMessageUnpinned?.call(chatId);
               break;
           }
         } catch (e) {

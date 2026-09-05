@@ -307,5 +307,135 @@ void main() {
     expect(restored.isPinned, isTrue);
     expect(restored.username, equals('pinned_user'));
   });
+
+  test('StickerData and StickerPack serialization and ChatMessage isSticker', () {
+    const sticker = StickerData(
+      id: 'cat_love',
+      packId: 'cyber_cats',
+      name: 'Heart Eyes Cat',
+      emoji: '😻',
+    );
+    final stickerJson = sticker.toJson();
+    expect(stickerJson['id'], equals('cat_love'));
+    expect(stickerJson['packId'], equals('cyber_cats'));
+    expect(stickerJson['name'], equals('Heart Eyes Cat'));
+    expect(stickerJson['emoji'], equals('😻'));
+
+    final restoredSticker = StickerData.fromJson(stickerJson);
+    expect(restoredSticker.id, equals(sticker.id));
+    expect(restoredSticker.name, equals('Heart Eyes Cat'));
+    expect(restoredSticker.emoji, equals('😻'));
+
+    const pack = StickerPack(
+      id: 'cyber_cats',
+      name: 'Cyber Cats',
+      icon: '🐱',
+      stickers: [sticker],
+    );
+    final packJson = pack.toJson();
+    expect(packJson['id'], equals('cyber_cats'));
+    expect(packJson['name'], equals('Cyber Cats'));
+    expect(packJson['icon'], equals('🐱'));
+    expect(packJson['stickers'].length, equals(1));
+
+    final restoredPack = StickerPack.fromJson(packJson);
+    expect(restoredPack.id, equals(pack.id));
+    expect(restoredPack.name, equals('Cyber Cats'));
+    expect(restoredPack.stickers.first.emoji, equals('😻'));
+
+    final stickerMsg = ChatMessage(
+      id: 'msg-stk-1',
+      chatId: 'peer-1',
+      senderId: 'me',
+      senderName: 'Me',
+      recipientId: 'peer-1',
+      content: '😻',
+      type: MessageType.sticker,
+      timestamp: DateTime.now(),
+      status: MessageStatus.delivered,
+    );
+    expect(stickerMsg.isSticker, isTrue);
+    expect(stickerMsg.isVoice, isFalse);
+    expect(stickerMsg.isImage, isFalse);
+
+    final msgJson = stickerMsg.toJson();
+    expect(msgJson['type'], equals('sticker'));
+    final restoredMsg = ChatMessage.fromJson(msgJson);
+    expect(restoredMsg.isSticker, isTrue);
+    expect(restoredMsg.content, equals('😻'));
+  });
+
+  test('SecuritySettings serialization and default values', () {
+    final defaultSettings = SecuritySettings();
+    expect(defaultSettings.isPinEnabled, isFalse);
+    expect(defaultSettings.autoLockMinutes, equals(5));
+    expect(defaultSettings.isBiometricEnabled, isFalse);
+
+    final customSettings = SecuritySettings(
+      isPinEnabled: true,
+      pinSalt: 'random_salt_123',
+      pinHash: 'hashed_pin_value',
+      autoLockMinutes: 1,
+      isBiometricEnabled: true,
+    );
+    final json = customSettings.toJson();
+    expect(json['isPinEnabled'], isTrue);
+    expect(json['pinSalt'], equals('random_salt_123'));
+    expect(json['pinHash'], equals('hashed_pin_value'));
+    expect(json['autoLockMinutes'], equals(1));
+    expect(json['isBiometricEnabled'], isTrue);
+
+    final restored = SecuritySettings.fromJson(json);
+    expect(restored.isPinEnabled, isTrue);
+    expect(restored.pinSalt, equals('random_salt_123'));
+    expect(restored.pinHash, equals('hashed_pin_value'));
+    expect(restored.autoLockMinutes, equals(1));
+    expect(restored.isBiometricEnabled, isTrue);
+  });
+
+  test('LinkedDevice serialization and deserialization', () {
+    final now = DateTime.now();
+    final device = LinkedDevice(
+      id: 'linked-laptop-01',
+      name: 'Alice ThinkPad',
+      platform: 'linux',
+      publicKey: 'laptop-public-key',
+      linkedAt: now,
+      lastSeen: now,
+    );
+
+    final json = device.toJson();
+    expect(json['id'], equals('linked-laptop-01'));
+    expect(json['name'], equals('Alice ThinkPad'));
+    expect(json['platform'], equals('linux'));
+    expect(json['publicKey'], equals('laptop-public-key'));
+
+    final restored = LinkedDevice.fromJson(json);
+    expect(restored.id, equals(device.id));
+    expect(restored.name, equals('Alice ThinkPad'));
+    expect(restored.platform, equals('linux'));
+    expect(restored.publicKey, equals('laptop-public-key'));
+  });
+
+  test('DirectHotspotInfo serialization and URI parsing', () {
+    const hotspot = DirectHotspotInfo(
+      ssid: 'DIRECT-OZO-NODE',
+      ip: '192.168.49.1',
+      port: 45455,
+      deviceId: 'device-node-1',
+      deviceName: 'Hotspot Phone',
+    );
+
+    final uriStr = hotspot.toUriString();
+    expect(uriStr, startsWith('ozo://hotspot?'));
+
+    final parsed = DirectHotspotInfo.parse(uriStr);
+    expect(parsed, isNotNull);
+    expect(parsed!.ssid, equals('DIRECT-OZO-NODE'));
+    expect(parsed.ip, equals('192.168.49.1'));
+    expect(parsed.port, equals(45455));
+    expect(parsed.deviceId, equals('device-node-1'));
+    expect(parsed.deviceName, equals('Hotspot Phone'));
+  });
 }
 

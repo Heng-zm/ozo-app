@@ -53,20 +53,22 @@ class ChatBubble extends StatelessWidget {
             margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
-              color: bubbleBg,
+              color: message.isSticker ? Colors.transparent : bubbleBg,
               borderRadius: BorderRadius.only(
                 topLeft: const Radius.circular(16),
                 topRight: const Radius.circular(16),
                 bottomLeft: isOutgoing ? const Radius.circular(16) : const Radius.circular(4),
                 bottomRight: isOutgoing ? const Radius.circular(4) : const Radius.circular(16),
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.04),
-                  blurRadius: 3,
-                  offset: const Offset(0, 1),
-                ),
-              ],
+              boxShadow: message.isSticker
+                  ? null
+                  : [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.04),
+                        blurRadius: 3,
+                        offset: const Offset(0, 1),
+                      ),
+                    ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -126,7 +128,15 @@ class ChatBubble extends StatelessWidget {
                   ),
                 ],
 
-                if (message.isVoice)
+                if (message.isSticker)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      message.content,
+                      style: const TextStyle(fontSize: 80),
+                    ),
+                  )
+                else if (message.isVoice)
                   VoiceNotePlayer(message: message, isMe: isOutgoing)
                 else if (message.isImage && message.fileMetadata != null)
                   _buildImageAttachmentCard(context, message.fileMetadata!)
@@ -254,6 +264,20 @@ class ChatBubble extends StatelessWidget {
                   onTap: () {
                     provider.setReplyingTo(message);
                     Navigator.of(ctx).pop();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.push_pin_rounded, color: TelegramTheme.primaryBlue),
+                  title: const Text('Pin Message'),
+                  onTap: () {
+                    provider.pinMessage(message.chatId, message.id);
+                    Navigator.of(ctx).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Message pinned!'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
                   },
                 ),
                 if (message.content.isNotEmpty)

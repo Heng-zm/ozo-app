@@ -7,10 +7,15 @@ import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/account_dialog.dart';
 import '../widgets/active_chat_view.dart';
+import '../widgets/app_lock_screen.dart';
+import '../widgets/backup_dialog.dart';
 import '../widgets/chat_folders_bar.dart';
+import '../widgets/direct_hotspot_dialog.dart';
 import '../widgets/group_create_dialog.dart';
+import '../widgets/linked_devices_dialog.dart';
 import '../widgets/peer_list_tile.dart';
 import '../widgets/remote_connection_dialog.dart';
+import '../widgets/security_settings_dialog.dart';
 import '../widgets/transfer_queue_sheet.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -38,8 +43,9 @@ class HomeScreen extends StatelessWidget {
       );
     }
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
+    return AppLockScreen(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
         final isDesktop = constraints.maxWidth >= 720;
         final selectedPeer = chatProvider.activePeer;
         final selectedGroup = chatProvider.activeGroup;
@@ -83,7 +89,7 @@ class HomeScreen extends StatelessWidget {
           }
         }
       },
-    );
+    ));
   }
 
   Widget _buildSidebar(BuildContext context, ChatProvider provider) {
@@ -594,10 +600,107 @@ class HomeScreen extends StatelessWidget {
                 );
               },
             ),
-            IconButton(
-              icon: const Icon(Icons.settings_outlined, size: 20),
-              tooltip: 'Device Settings',
-              onPressed: () => _showSettingsDialog(context, provider),
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert_rounded, size: 20),
+              tooltip: 'More Features',
+              onSelected: (val) {
+                switch (val) {
+                  case 'hotspot':
+                    showDialog(
+                      context: context,
+                      builder: (_) => const DirectHotspotDialog(),
+                    );
+                    break;
+                  case 'linked':
+                    showDialog(
+                      context: context,
+                      builder: (_) => const LinkedDevicesDialog(),
+                    );
+                    break;
+                  case 'backup':
+                    showDialog(
+                      context: context,
+                      builder: (_) => const BackupDialog(),
+                    );
+                    break;
+                  case 'security':
+                    showDialog(
+                      context: context,
+                      builder: (_) => const SecuritySettingsDialog(),
+                    );
+                    break;
+                  case 'lock':
+                    provider.security.lock();
+                    break;
+                  case 'settings':
+                    _showSettingsDialog(context, provider);
+                    break;
+                }
+              },
+              itemBuilder: (ctx) => [
+                const PopupMenuItem(
+                  value: 'hotspot',
+                  child: Row(
+                    children: [
+                      Icon(Icons.wifi_tethering_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                      SizedBox(width: 10),
+                      Text('Direct Hotspot Mode'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'linked',
+                  child: Row(
+                    children: [
+                      Icon(Icons.devices_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                      SizedBox(width: 10),
+                      Text('Linked Devices'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'backup',
+                  child: Row(
+                    children: [
+                      Icon(Icons.security_update_good_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                      SizedBox(width: 10),
+                      Text('Encrypted Backup & Vault'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'security',
+                  child: Row(
+                    children: [
+                      Icon(Icons.lock_outline_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                      SizedBox(width: 10),
+                      Text('Passcode & Security'),
+                    ],
+                  ),
+                ),
+                if (provider.security.isPinConfigured)
+                  const PopupMenuItem(
+                    value: 'lock',
+                    child: Row(
+                      children: [
+                        Icon(Icons.lock_rounded, size: 18, color: Colors.orange),
+                        SizedBox(width: 10),
+                        Text('Lock App Now'),
+                      ],
+                    ),
+                  ),
+                const PopupMenuDivider(),
+                const PopupMenuItem(
+                  value: 'settings',
+                  child: Row(
+                    children: [
+                      Icon(Icons.settings_outlined, size: 18),
+                      SizedBox(width: 10),
+                      Text('Device Settings'),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ],
         ),

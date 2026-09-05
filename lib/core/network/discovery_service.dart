@@ -128,7 +128,39 @@ class DiscoveryService {
           }
         }
       }
+
+      // Add direct routerless hotspot subnets (Android, iOS, Windows, Wi-Fi Direct)
+      const directHotspotSubnets = [
+        '192.168.43.255',  // Android Mobile Hotspot
+        '172.20.10.255',   // iOS Personal Hotspot
+        '192.168.137.255', // Windows Mobile Hotspot
+        '192.168.49.255',  // Android Wi-Fi Direct
+        '10.0.0.255',      // Ad-hoc portable hotspot
+      ];
+      for (final subnet in directHotspotSubnets) {
+        if (!_directedBroadcastAddresses.contains(subnet)) {
+          _directedBroadcastAddresses.add(subnet);
+        }
+      }
     } catch (_) {}
+  }
+
+  /// Retrieves the active local IP address for Hotspot & Direct connect
+  Future<String> getLocalIpAddress() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLinkLocal: false,
+      );
+      for (final iface in interfaces) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback) {
+            return addr.address;
+          }
+        }
+      }
+    } catch (_) {}
+    return '127.0.0.1';
   }
 
   /// Sends a broadcast beacon packet across all broadcast channels
