@@ -17,6 +17,8 @@ class Peer {
   final String platform;
   DateTime lastSeen;
   bool hasIdentityConflict;
+  bool isRemote;
+  String? remoteTunnelUrl;
 
   Peer({
     required this.id,
@@ -27,10 +29,12 @@ class Peer {
     required this.platform,
     required this.lastSeen,
     this.hasIdentityConflict = false,
+    this.isRemote = false,
+    this.remoteTunnelUrl,
   });
 
   bool get isOnline =>
-      DateTime.now().difference(lastSeen) < AppConstants.peerOfflineThreshold;
+      isRemote || DateTime.now().difference(lastSeen) < AppConstants.peerOfflineThreshold;
 
   /// Short 8-character cryptographic safety fingerprint (e.g. A1B2-C3D4)
   String get safetyFingerprint {
@@ -48,6 +52,8 @@ class Peer {
         'platform': platform,
         'lastSeen': lastSeen.toIso8601String(),
         'hasIdentityConflict': hasIdentityConflict,
+        'isRemote': isRemote,
+        'remoteTunnelUrl': remoteTunnelUrl,
       };
 
   factory Peer.fromJson(Map<String, dynamic> json) => Peer(
@@ -61,6 +67,8 @@ class Peer {
             ? DateTime.parse(json['lastSeen'] as String)
             : DateTime.now(),
         hasIdentityConflict: json['hasIdentityConflict'] as bool? ?? false,
+        isRemote: json['isRemote'] as bool? ?? false,
+        remoteTunnelUrl: json['remoteTunnelUrl'] as String?,
       );
 
   Peer copyWith({
@@ -71,6 +79,8 @@ class Peer {
     String? platform,
     DateTime? lastSeen,
     bool? hasIdentityConflict,
+    bool? isRemote,
+    String? remoteTunnelUrl,
   }) {
     return Peer(
       id: id,
@@ -81,7 +91,91 @@ class Peer {
       platform: platform ?? this.platform,
       lastSeen: lastSeen ?? this.lastSeen,
       hasIdentityConflict: hasIdentityConflict ?? this.hasIdentityConflict,
+      isRemote: isRemote ?? this.isRemote,
+      remoteTunnelUrl: remoteTunnelUrl ?? this.remoteTunnelUrl,
     );
+  }
+}
+
+/// Helper to serialize and parse remote connection links & QR codes
+class PeerConnectionLink {
+  final String id;
+  final String name;
+  final String host;
+  final int port;
+  final String publicKey;
+  final String platform;
+  final bool isSecure;
+
+  PeerConnectionLink({
+    required this.id,
+    required this.name,
+    required this.host,
+    required this.port,
+    required this.publicKey,
+    this.platform = 'unknown',
+    this.isSecure = false,
+  });
+
+  String toUriString() {
+    final uri = Uri(
+      scheme: 'ozo',
+      host: 'connect',
+      queryParameters: {
+        'id': id,
+        'name': name,
+        'host': host,
+        'port': port.toString(),
+        'key': publicKey,
+        'platform': platform,
+        'ssl': isSecure ? '1' : '0',
+      },
+    );
+    return uri.toString();
+  }
+
+  static PeerConnectionLink? parse(String input) {
+    try {
+      final trimmed = input.trim();
+      if (trimmed.startsWith('ozo://') || trimmed.contains('connect?')) {
+        final uri = Uri.parse(trimmed);
+        final q = uri.queryParameters;
+        return PeerConnectionLink(
+          id: q['id'] ?? '',
+          name: q['name'] ?? 'Remote Peer',
+          host: q['host'] ?? '',
+          port: int.tryParse(q['port'] ?? '') ?? 45455,
+          publicKey: q['key'] ?? '',
+          platform: q['platform'] ?? 'unknown',
+          isSecure: q['ssl'] == '1',
+        );
+      } else if (trimmed.contains('trycloudflare.com') ||
+          trimmed.startsWith('http://') ||
+          trimmed.startsWith('https://')) {
+        final uri = Uri.parse(
+            trimmed.startsWith('http') ? trimmed : 'https://$trimmed');
+        return PeerConnectionLink(
+          id: 'cf-${uri.host}',
+          name: uri.host.split('.').first,
+          host: uri.host,
+          port: uri.port > 0 ? uri.port : (uri.scheme == 'https' ? 443 : 80),
+          publicKey: '',
+          platform: 'remote',
+          isSecure: uri.scheme == 'https',
+        );
+      } else if (trimmed.contains(':')) {
+        final parts = trimmed.split(':');
+        return PeerConnectionLink(
+          id: 'manual-${parts[0]}',
+          name: parts[0],
+          host: parts[0],
+          port: int.tryParse(parts[1]) ?? 45455,
+          publicKey: '',
+          platform: 'remote',
+        );
+      }
+    } catch (_) {}
+    return null;
   }
 }
 
@@ -180,6 +274,10 @@ class ChatMessage {
   final String? groupId;
   final double? voiceDurationSeconds;
   final List<double>? waveformAmplitudes;
+  final String? replyToId;
+  final String? replyToText;
+  final String? replyToSenderName;
+  final Map<String, List<String>> reactions;
 
   ChatMessage({
     required this.id,
@@ -196,7 +294,11 @@ class ChatMessage {
     this.groupId,
     this.voiceDurationSeconds,
     this.waveformAmplitudes,
-  });
+    this.replyToId,
+    this.replyToText,
+    this.replyToSenderName,
+    Map<String, List<String>>? reactions,
+  }) : reactions = reactions ?? {};
 
   bool get isImage {
     if (type == MessageType.image) return true;
@@ -229,37 +331,57 @@ class ChatMessage {
         'groupId': groupId,
         'voiceDurationSeconds': voiceDurationSeconds,
         'waveformAmplitudes': waveformAmplitudes,
+        'replyToId': replyToId,
+        'replyToText': replyToText,
+        'replyToSenderName': replyToSenderName,
+        'reactions': reactions,
       };
 
-  factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
-        id: json['id'] as String,
-        chatId: json['chatId'] as String,
-        senderId: json['senderId'] as String,
-        senderName: json['senderName'] as String? ?? 'Unknown',
-        recipientId: json['recipientId'] as String,
-        content: json['content'] as String? ?? '',
-        type: MessageType.values.firstWhere(
-          (e) => e.name == json['type'],
-          orElse: () => MessageType.text,
-        ),
-        timestamp: json['timestamp'] != null
-            ? DateTime.parse(json['timestamp'] as String)
-            : DateTime.now(),
-        status: MessageStatus.values.firstWhere(
-          (e) => e.name == json['status'],
-          orElse: () => MessageStatus.delivered,
-        ),
-        fileMetadata: json['fileMetadata'] != null
-            ? FileMetadata.fromJson(
-                json['fileMetadata'] as Map<String, dynamic>)
-            : null,
-        isGroup: json['isGroup'] as bool? ?? false,
-        groupId: json['groupId'] as String?,
-        voiceDurationSeconds: (json['voiceDurationSeconds'] as num?)?.toDouble(),
-        waveformAmplitudes: (json['waveformAmplitudes'] as List<dynamic>?)
-            ?.map((e) => (e as num).toDouble())
-            .toList(),
-      );
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    final rawReactions = json['reactions'] as Map<String, dynamic>?;
+    final parsedReactions = <String, List<String>>{};
+    if (rawReactions != null) {
+      rawReactions.forEach((key, val) {
+        if (val is List) {
+          parsedReactions[key] = val.map((e) => e.toString()).toList();
+        }
+      });
+    }
+
+    return ChatMessage(
+      id: json['id'] as String,
+      chatId: json['chatId'] as String,
+      senderId: json['senderId'] as String,
+      senderName: json['senderName'] as String? ?? 'Unknown',
+      recipientId: json['recipientId'] as String,
+      content: json['content'] as String? ?? '',
+      type: MessageType.values.firstWhere(
+        (e) => e.name == json['type'],
+        orElse: () => MessageType.text,
+      ),
+      timestamp: json['timestamp'] != null
+          ? DateTime.parse(json['timestamp'] as String)
+          : DateTime.now(),
+      status: MessageStatus.values.firstWhere(
+        (e) => e.name == json['status'],
+        orElse: () => MessageStatus.delivered,
+      ),
+      fileMetadata: json['fileMetadata'] != null
+          ? FileMetadata.fromJson(
+              json['fileMetadata'] as Map<String, dynamic>)
+          : null,
+      isGroup: json['isGroup'] as bool? ?? false,
+      groupId: json['groupId'] as String?,
+      voiceDurationSeconds: (json['voiceDurationSeconds'] as num?)?.toDouble(),
+      waveformAmplitudes: (json['waveformAmplitudes'] as List<dynamic>?)
+          ?.map((e) => (e as num).toDouble())
+          .toList(),
+      replyToId: json['replyToId'] as String?,
+      replyToText: json['replyToText'] as String?,
+      replyToSenderName: json['replyToSenderName'] as String?,
+      reactions: parsedReactions,
+    );
+  }
 
   ChatMessage copyWith({
     String? id,
@@ -276,6 +398,10 @@ class ChatMessage {
     String? groupId,
     double? voiceDurationSeconds,
     List<double>? waveformAmplitudes,
+    String? replyToId,
+    String? replyToText,
+    String? replyToSenderName,
+    Map<String, List<String>>? reactions,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -292,8 +418,60 @@ class ChatMessage {
       groupId: groupId ?? this.groupId,
       voiceDurationSeconds: voiceDurationSeconds ?? this.voiceDurationSeconds,
       waveformAmplitudes: waveformAmplitudes ?? this.waveformAmplitudes,
+      replyToId: replyToId ?? this.replyToId,
+      replyToText: replyToText ?? this.replyToText,
+      replyToSenderName: replyToSenderName ?? this.replyToSenderName,
+      reactions: reactions ?? Map<String, List<String>>.from(this.reactions),
     );
   }
+}
+
+/// Call status lifecycle for 1-on-1 audio calls
+enum CallStatus {
+  idle,
+  outgoingCalling,
+  incomingRinging,
+  connected,
+  ended,
+}
+
+/// P2P Call Signaling payload
+class CallSignaling {
+  final String callId;
+  final String callerId;
+  final String callerName;
+  final String type; // 'offer', 'answer', 'reject', 'end'
+  final bool? accepted;
+  final DateTime timestamp;
+
+  CallSignaling({
+    required this.callId,
+    required this.callerId,
+    required this.callerName,
+    required this.type,
+    this.accepted,
+    DateTime? timestamp,
+  }) : timestamp = timestamp ?? DateTime.now();
+
+  Map<String, dynamic> toJson() => {
+        'callId': callId,
+        'callerId': callerId,
+        'callerName': callerName,
+        'type': type,
+        'accepted': accepted,
+        'timestamp': timestamp.toIso8601String(),
+      };
+
+  factory CallSignaling.fromJson(Map<String, dynamic> json) => CallSignaling(
+        callId: json['callId'] as String,
+        callerId: json['callerId'] as String,
+        callerName: json['callerName'] as String? ?? 'Peer',
+        type: json['type'] as String,
+        accepted: json['accepted'] as bool?,
+        timestamp: json['timestamp'] != null
+            ? DateTime.parse(json['timestamp'] as String)
+            : DateTime.now(),
+      );
 }
 
 /// Represents an active or completed file transfer

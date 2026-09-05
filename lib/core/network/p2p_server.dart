@@ -12,6 +12,9 @@ typedef DeliveryReceiptCallback = void Function(String messageId, MessageStatus 
 typedef TypingCallback = void Function(String peerId, bool isTyping);
 typedef GroupInviteCallback = void Function(GroupChat group);
 typedef GroupRelayCallback = void Function(ChatMessage message, String groupId);
+typedef ReactionCallback = void Function(String messageId, String emoji, String senderId);
+typedef DeleteMessageCallback = void Function(String messageId);
+typedef CallSignalingCallback = void Function(CallSignaling signaling);
 
 /// Embedded HTTP and WebSocket server running locally on each peer
 class P2pServer {
@@ -36,6 +39,9 @@ class P2pServer {
   TypingCallback? onTyping;
   GroupInviteCallback? onGroupInvite;
   GroupRelayCallback? onGroupMessage;
+  ReactionCallback? onReactionReceived;
+  DeleteMessageCallback? onMessageDeleted;
+  CallSignalingCallback? onCallSignaling;
 
   int get port => _actualPort;
 
@@ -236,6 +242,24 @@ class P2pServer {
             case 'GROUP_RELAY':
               _handleIncomingGroupMessage(msg);
               break;
+            case 'REACTION':
+              final messageId = msg['messageId'] as String;
+              final emoji = msg['emoji'] as String;
+              if (senderId != null) {
+                onReactionReceived?.call(messageId, emoji, senderId);
+              }
+              break;
+            case 'DELETE_MSG':
+              final messageId = msg['messageId'] as String;
+              onMessageDeleted?.call(messageId);
+              break;
+            case 'CALL_OFFER':
+            case 'CALL_ANSWER':
+            case 'CALL_REJECT':
+            case 'CALL_END':
+              final signaling = CallSignaling.fromJson(msg);
+              onCallSignaling?.call(signaling);
+              break;
           }
         } catch (e) {
           if (kDebugMode) print('WS parse error: $e');
@@ -286,6 +310,10 @@ class P2pServer {
         ? FileMetadata.fromJson(msg['fileMetadata'] as Map<String, dynamic>)
         : null;
 
+    final replyToId = msg['replyToId'] as String?;
+    final replyToText = msg['replyToText'] as String?;
+    final replyToSenderName = msg['replyToSenderName'] as String?;
+
     final chatMsg = ChatMessage(
       id: messageId,
       chatId: senderId, // 1-on-1 chat
@@ -299,6 +327,9 @@ class P2pServer {
       fileMetadata: fileMeta,
       voiceDurationSeconds: voiceDuration,
       waveformAmplitudes: amplitudes,
+      replyToId: replyToId,
+      replyToText: replyToText,
+      replyToSenderName: replyToSenderName,
     );
 
     onMessageReceived?.call(chatMsg);

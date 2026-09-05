@@ -51,12 +51,15 @@ void main() {
     );
 
     await tester.pumpWidget(
-      MaterialApp(
-        theme: TelegramTheme.lightTheme,
-        home: Scaffold(
-          body: ChatBubble(
-            message: message,
-            isOutgoing: true,
+      ChangeNotifierProvider<ChatProvider>(
+        create: (_) => ChatProvider(),
+        child: MaterialApp(
+          theme: TelegramTheme.lightTheme,
+          home: Scaffold(
+            body: ChatBubble(
+              message: message,
+              isOutgoing: true,
+            ),
           ),
         ),
       ),
@@ -98,5 +101,79 @@ void main() {
 
     expect(find.byIcon(Icons.download_rounded), findsOneWidget);
     expect(find.text('0:12'), findsOneWidget);
+  });
+
+  testWidgets('ChatBubble renders quoted reply and reaction chips', (WidgetTester tester) async {
+    final msg = ChatMessage(
+      id: 'reply-1',
+      chatId: 'chat-1',
+      senderId: 'alice',
+      senderName: 'Alice',
+      recipientId: 'bob',
+      content: 'This sounds great!',
+      type: MessageType.text,
+      timestamp: DateTime(2026, 9, 5, 15, 0),
+      status: MessageStatus.read,
+      replyToId: 'orig-1',
+      replyToText: 'Can you review the PR?',
+      replyToSenderName: 'Bob',
+      reactions: {
+        '❤️': ['bob'],
+        '👍': ['alice', 'charlie'],
+      },
+    );
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<ChatProvider>(
+        create: (_) => ChatProvider(),
+        child: MaterialApp(
+          theme: TelegramTheme.lightTheme,
+          home: Scaffold(
+            body: ChatBubble(
+              message: msg,
+              isOutgoing: false,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('This sounds great!'), findsOneWidget);
+    expect(find.text('Can you review the PR?'), findsOneWidget);
+    expect(find.text('Bob'), findsWidgets);
+    expect(find.text('❤️ 1'), findsOneWidget);
+    expect(find.text('👍 2'), findsOneWidget);
+  });
+
+  testWidgets('PeerListTile renders Remote badge for Cloudflare tunnel peers', (WidgetTester tester) async {
+    final remotePeer = Peer(
+      id: 'remote-1',
+      name: 'Cloud Node',
+      ip: 'peaceful-tiger.trycloudflare.com',
+      port: 443,
+      publicKey: 'pub-key-remote',
+      platform: 'linux',
+      lastSeen: DateTime.now(),
+      isRemote: true,
+      remoteTunnelUrl: 'https://peaceful-tiger.trycloudflare.com',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: TelegramTheme.lightTheme,
+        home: Scaffold(
+          body: PeerListTile(
+            peer: remotePeer,
+            isSelected: false,
+            onTap: () {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Cloud Node'), findsOneWidget);
+    expect(find.text('Remote'), findsOneWidget);
+    expect(find.text('Remote Cloudflare Tunnel'), findsOneWidget);
+    expect(find.byIcon(Icons.cloud_rounded), findsOneWidget);
   });
 }

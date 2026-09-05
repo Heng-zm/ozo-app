@@ -1,9 +1,12 @@
+import 'dart:io';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/database/models.dart';
 import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
+import 'call_screen.dart';
 import 'chat_bubble.dart';
 import 'safety_number_dialog.dart';
 
@@ -27,6 +30,7 @@ class _ActiveChatViewState extends State<ActiveChatView> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   bool _isComposing = false;
+  bool _isDragging = false;
 
   @override
   void dispose() {
@@ -130,9 +134,16 @@ class _ActiveChatViewState extends State<ActiveChatView> {
         actions: [
           if (!isGroup) ...[
             IconButton(
-              tooltip: 'Verify Safety Number',
+              tooltip: 'Voice Call',
+              icon: const Icon(Icons.phone_rounded, size: 22),
+              onPressed: () => provider.startCall(peer!),
+            ),
+            IconButton(
+              tooltip: 'Safety Number / E2EE',
               icon: Icon(
-                peer!.hasIdentityConflict ? Icons.warning_amber_rounded : Icons.verified_user_rounded,
+                peer!.hasIdentityConflict
+                    ? Icons.warning_amber_rounded
+                    : Icons.verified_user_outlined,
                 color: peer.hasIdentityConflict ? Colors.orange : TelegramTheme.onlineGreen,
                 size: 22,
               ),
@@ -152,106 +163,208 @@ class _ActiveChatViewState extends State<ActiveChatView> {
           ],
         ],
       ),
-      body: Column(
-        children: [
-          // Banner
-          if (isGroup && !isOnline)
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-              color: Colors.orange.withValues(alpha: 0.15),
-              child: Row(
-                children: [
-                  const Icon(Icons.lock_clock, size: 16, color: Colors.orange),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Group creator (${group!.hostName}) is offline. This group is read-only until the host reconnects.',
-                      style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.w600),
+      body: DropTarget(
+        onDragDone: (detail) {
+          for (final f in detail.files) {
+            provider.sendFile(File(f.path));
+          }
+        },
+        onDragEntered: (detail) => setState(() => _isDragging = true),
+        onDragExited: (detail) => setState(() => _isDragging = false),
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                // Banner
+                if (isGroup && !isOnline)
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+                    color: Colors.orange.withValues(alpha: 0.15),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.lock_clock, size: 16, color: Colors.orange),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Group creator (${group!.hostName}) is offline. This group is read-only until the host reconnects.',
+                            style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-            )
-          else if (!isGroup && peer!.hasIdentityConflict)
-            InkWell(
-              onTap: () => showDialog(
-                context: context,
-                builder: (_) => SafetyNumberDialog(peer: peer),
-              ),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-                color: Colors.red.withValues(alpha: 0.12),
-                child: const Row(
-                  children: [
-                    Icon(Icons.warning_amber_rounded, size: 16, color: Colors.red),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Identity Warning: Device key changed! Tap to verify safety number.',
-                        style: TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.bold),
+                  )
+                else if (!isGroup && peer!.hasIdentityConflict)
+                  InkWell(
+                    onTap: () => showDialog(
+                      context: context,
+                      builder: (_) => SafetyNumberDialog(peer: peer),
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+                      color: Colors.red.withValues(alpha: 0.12),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded, size: 16, color: Colors.red),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Identity Warning: Device key changed! Tap to verify safety number.',
+                              style: TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
+                    color: Colors.black.withValues(alpha: 0.05),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          isGroup ? Icons.hub_outlined : Icons.shield_outlined,
+                          size: 14,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          isGroup
+                              ? 'Host-Relay Group via ${group!.hostName}'
+                              : (peer!.isRemote
+                                  ? 'End-to-End Encrypted via Remote Cloudflare Tunnel'
+                                  : 'End-to-End Encrypted via Direct LAN P2P'),
+                          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                        ),
+                      ],
+                    ),
+                  ),
+                // Messages list
+                Expanded(
+                  child: messages.isEmpty
+                      ? Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Text(
+                              isGroup
+                                  ? 'No messages in this group yet.'
+                                  : 'No messages yet. Say hi over the network!',
+                              style: const TextStyle(fontSize: 13, color: Colors.grey),
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          controller: _scrollController,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          itemCount: messages.length,
+                          itemBuilder: (context, index) {
+                            final msg = messages[index];
+                            final isOutgoing = msg.senderId == provider.deviceId;
+                            return ChatBubble(
+                              message: msg,
+                              isOutgoing: isOutgoing,
+                            );
+                          },
+                        ),
+                ),
+                // Reply preview banner
+                if (provider.replyingToMessage != null)
+                  _buildReplyBanner(context, provider, isDark),
+                // Input bar
+                _buildInputBar(context, provider, isDark, isGroup, isOnline),
+              ],
+            ),
+            // Drag-and-drop Overlay
+            if (_isDragging)
+              Positioned.fill(
+                child: Container(
+                  color: TelegramTheme.primaryBlue.withValues(alpha: 0.85),
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.file_upload_rounded, color: Colors.white, size: 60),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Drop files here to send securely via P2P',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-            )
-          else
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
-              color: Colors.black.withValues(alpha: 0.05),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+            // Call Screen Overlay
+            if (provider.callStatus != CallStatus.idle)
+              const Positioned.fill(
+                child: CallScreen(),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReplyBanner(BuildContext context, ChatProvider provider, bool isDark) {
+    final msg = provider.replyingToMessage!;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: isDark ? TelegramTheme.darkSidebar : Colors.white,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(8),
+          border: const Border(
+            left: BorderSide(color: TelegramTheme.primaryBlue, width: 3),
+          ),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.reply_rounded, color: TelegramTheme.primaryBlue, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    isGroup ? Icons.hub_outlined : Icons.shield_outlined,
-                    size: 14,
-                    color: Colors.grey,
-                  ),
-                  const SizedBox(width: 6),
                   Text(
-                    isGroup
-                        ? 'Host-Relay Group via ${group!.hostName}'
-                        : 'End-to-End Encrypted via Direct LAN P2P',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                    msg.senderName,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: TelegramTheme.primaryBlue,
+                    ),
+                  ),
+                  Text(
+                    msg.content.isNotEmpty ? msg.content : (msg.isImage ? 'Photo' : 'Voice/File'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+                    ),
                   ),
                 ],
               ),
             ),
-          // Messages list
-          Expanded(
-            child: messages.isEmpty
-                ? Center(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Text(
-                        isGroup
-                            ? 'No messages in this group yet.'
-                            : 'No messages yet. Say hi over the local network!',
-                        style: const TextStyle(fontSize: 13, color: Colors.grey),
-                      ),
-                    ),
-                  )
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    itemCount: messages.length,
-                    itemBuilder: (context, index) {
-                      final msg = messages[index];
-                      final isOutgoing = msg.senderId == provider.deviceId;
-                      return ChatBubble(
-                        message: msg,
-                        isOutgoing: isOutgoing,
-                      );
-                    },
-                  ),
-          ),
-          // Input bar
-          _buildInputBar(context, provider, isDark, isGroup, isOnline),
-        ],
+            IconButton(
+              icon: const Icon(Icons.close_rounded, size: 18),
+              onPressed: () => provider.cancelReplying(),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+            ),
+          ],
+        ),
       ),
     );
   }

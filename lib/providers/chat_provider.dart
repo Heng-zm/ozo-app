@@ -69,6 +69,36 @@ class ChatProvider extends ChangeNotifier {
   Duration get playbackTotal => _playbackTotal;
   double get playbackSpeed => _playbackSpeed;
 
+  // Quoted Reply state
+  ChatMessage? _replyingToMessage;
+  ChatMessage? get replyingToMessage => _replyingToMessage;
+
+  void setReplyingTo(ChatMessage? message) {
+    _replyingToMessage = message;
+    notifyListeners();
+  }
+
+  void cancelReplying() {
+    _replyingToMessage = null;
+    notifyListeners();
+  }
+
+  // Audio Call state
+  CallStatus _callStatus = CallStatus.idle;
+  Peer? _activeCallPeer;
+  String? _currentCallId;
+  Duration _callDuration = Duration.zero;
+  Timer? _callTimer;
+  bool _isCallMuted = false;
+  bool _isSpeakerOn = false;
+
+  CallStatus get callStatus => _callStatus;
+  Peer? get activeCallPeer => _activeCallPeer;
+  String? get currentCallId => _currentCallId;
+  Duration get callDuration => _callDuration;
+  bool get isCallMuted => _isCallMuted;
+  bool get isSpeakerOn => _isSpeakerOn;
+
   String get deviceId => _deviceId;
   String get deviceName => _deviceName;
   String get platform => _platform;
@@ -168,10 +198,16 @@ class ChatProvider extends ChangeNotifier {
     server.onTyping = _handleTyping;
     server.onGroupInvite = _handleIncomingGroupInvite;
     server.onGroupMessage = _handleIncomingGroupMessage;
+    server.onReactionReceived = _handleIncomingReaction;
+    server.onMessageDeleted = _handleIncomingMessageDeleted;
+    server.onCallSignaling = _handleIncomingCallSignaling;
 
     // Hook client duplex callbacks
     client.onDeliveryReceipt = _handleDeliveryReceipt;
     client.onTyping = _handleTyping;
+    client.onReactionReceived = _handleIncomingReaction;
+    client.onMessageDeleted = _handleIncomingMessageDeleted;
+    client.onCallSignaling = _handleIncomingCallSignaling;
 
     // Hook Audio Player listeners
     _audioPlayer.onPlayerStateChanged.listen((state) {
@@ -315,6 +351,11 @@ class ChatProvider extends ChangeNotifier {
     final peer = _activePeer!;
     final messageId = _uuid.v4();
 
+    final replyId = _replyingToMessage?.id;
+    final replyText = _replyingToMessage?.content;
+    final replySender = _replyingToMessage?.senderName;
+    _replyingToMessage = null;
+
     final message = ChatMessage(
       id: messageId,
       chatId: peer.id,
@@ -325,6 +366,9 @@ class ChatProvider extends ChangeNotifier {
       type: MessageType.text,
       timestamp: DateTime.now(),
       status: MessageStatus.pending,
+      replyToId: replyId,
+      replyToText: replyText,
+      replyToSenderName: replySender,
     );
 
     // Save locally first (optimistic UI)
@@ -346,16 +390,13 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Selects and sends a file attachment to the active peer
-  Future<void> pickAndSendFile() async {
+  /// Sends a file to the active peer (used by both picker and desktop drag-and-drop)
+  Future<void> sendFile(File file) async {
     if (_activePeer == null) return;
+    if (!await file.exists()) return;
 
-    final pickedFile = await FilePicker.pickFile();
-    if (pickedFile == null || pickedFile.path == null) return;
-
-    final file = File(pickedFile.path!);
     final messageId = _uuid.v4();
-    final fileName = pickedFile.name;
+    final fileName = file.uri.pathSegments.last;
     final fileSize = await file.length();
 
     final ext = fileName.toLowerCase();
@@ -405,6 +446,16 @@ class ChatProvider extends ChangeNotifier {
     }
     await database.saveMessage(chatMessage);
     notifyListeners();
+  }
+
+  /// Selects and sends a file attachment to the active peer
+  Future<void> pickAndSendFile() async {
+    if (_activePeer == null) return;
+
+    final pickedFile = await FilePicker.pickFile();
+    if (pickedFile == null || pickedFile.path == null) return;
+
+    await sendFile(File(pickedFile.path!));
   }
 
   /// Starts push-to-talk voice recording with live amplitude monitoring
@@ -727,9 +778,235 @@ class ChatProvider extends ChangeNotifier {
     return '${_platform.toUpperCase()} User';
   }
 
+  /// Connects to a remote peer via Cloudflare Tunnel URL, invite link, or IP:Port
+  Future<bool> connectToRemotePeer(String input) async {
+    final link = PeerConnectionLink.parse(input);
+    if (link == null) return false;
+
+    final peer = Peer(
+      id: link.id,
+      name: link.name,
+      ip: link.host,
+      port: link.port,
+      publicKey: link.publicKey,
+      platform: link.platform,
+      lastSeen: DateTime.now(),
+      isRemote: true,
+      remoteTunnelUrl: link.isSecure
+          ? 'https://${link.host}'
+          : (link.port == 443 ? 'https://${link.host}' : 'http://${link.host}:${link.port}'),
+    );
+
+    await database.upsertPeer(peer);
+    setActivePeer(peer);
+    notifyListeners();
+
+    final socket = await client.getOrConnect(peer);
+    return socket != null;
+  }
+
+  /// Toggles an emoji reaction on a message and broadcasts to peer
+  Future<void> toggleReaction(String messageId, String emoji) async {
+    final chatMessages = activeMessages;
+    final index = chatMessages.indexWhere((m) => m.id == messageId);
+    if (index < 0) return;
+
+    final msg = chatMessages[index];
+    final list = List<String>.from(msg.reactions[emoji] ?? []);
+    if (list.contains(_deviceId)) {
+      list.remove(_deviceId);
+      if (list.isEmpty) {
+        msg.reactions.remove(emoji);
+      } else {
+        msg.reactions[emoji] = list;
+      }
+    } else {
+      list.add(_deviceId);
+      msg.reactions[emoji] = list;
+    }
+
+    await database.updateMessageReactions(messageId, msg.reactions);
+    notifyListeners();
+
+    if (_activePeer != null) {
+      await client.sendReaction(
+        peer: _activePeer!,
+        messageId: messageId,
+        emoji: emoji,
+      );
+    }
+  }
+
+  void _handleIncomingReaction(String messageId, String emoji, String senderId) {
+    for (final msg in database.messages) {
+      if (msg.id == messageId) {
+        final list = List<String>.from(msg.reactions[emoji] ?? []);
+        if (!list.contains(senderId)) {
+          list.add(senderId);
+          msg.reactions[emoji] = list;
+          database.updateMessageReactions(messageId, msg.reactions);
+          notifyListeners();
+        }
+        break;
+      }
+    }
+  }
+
+  /// Deletes a message locally and sends a delete packet to the peer
+  Future<void> deleteMessageForEveryone(String messageId) async {
+    await database.deleteMessage(messageId);
+    notifyListeners();
+
+    if (_activePeer != null) {
+      await client.sendDeleteMessage(
+        peer: _activePeer!,
+        messageId: messageId,
+      );
+    }
+  }
+
+  void _handleIncomingMessageDeleted(String messageId) {
+    database.deleteMessage(messageId);
+    notifyListeners();
+  }
+
+  // --- Voice Call Methods ---
+  void toggleCallMute() {
+    _isCallMuted = !_isCallMuted;
+    notifyListeners();
+  }
+
+  void toggleSpeaker() {
+    _isSpeakerOn = !_isSpeakerOn;
+    notifyListeners();
+  }
+
+  Future<void> startCall(Peer peer) async {
+    _activeCallPeer = peer;
+    _currentCallId = _uuid.v4();
+    _callStatus = CallStatus.outgoingCalling;
+    _callDuration = Duration.zero;
+    _isCallMuted = false;
+    _isSpeakerOn = false;
+    notifyListeners();
+
+    final signaling = CallSignaling(
+      callId: _currentCallId!,
+      callerId: _deviceId,
+      callerName: _deviceName,
+      type: 'CALL_OFFER',
+    );
+
+    await client.sendCallSignaling(peer: peer, signaling: signaling);
+  }
+
+  Future<void> acceptCall() async {
+    if (_activeCallPeer == null || _currentCallId == null) return;
+    _callStatus = CallStatus.connected;
+    _startCallTimer();
+    notifyListeners();
+
+    final signaling = CallSignaling(
+      callId: _currentCallId!,
+      callerId: _deviceId,
+      callerName: _deviceName,
+      type: 'CALL_ANSWER',
+      accepted: true,
+    );
+
+    await client.sendCallSignaling(peer: _activeCallPeer!, signaling: signaling);
+  }
+
+  Future<void> declineCall() async {
+    if (_activeCallPeer != null && _currentCallId != null) {
+      final signaling = CallSignaling(
+        callId: _currentCallId!,
+        callerId: _deviceId,
+        callerName: _deviceName,
+        type: 'CALL_REJECT',
+        accepted: false,
+      );
+      await client.sendCallSignaling(peer: _activeCallPeer!, signaling: signaling);
+    }
+    _endCallInternal();
+  }
+
+  Future<void> endCall() async {
+    if (_activeCallPeer != null && _currentCallId != null) {
+      final signaling = CallSignaling(
+        callId: _currentCallId!,
+        callerId: _deviceId,
+        callerName: _deviceName,
+        type: 'CALL_END',
+      );
+      await client.sendCallSignaling(peer: _activeCallPeer!, signaling: signaling);
+    }
+    _endCallInternal();
+  }
+
+  void _startCallTimer() {
+    _callTimer?.cancel();
+    _callDuration = Duration.zero;
+    _callTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _callDuration += const Duration(seconds: 1);
+      notifyListeners();
+    });
+  }
+
+  void _endCallInternal() {
+    _callTimer?.cancel();
+    _callTimer = null;
+    _callStatus = CallStatus.idle;
+    _activeCallPeer = null;
+    _currentCallId = null;
+    _callDuration = Duration.zero;
+    notifyListeners();
+  }
+
+  void _handleIncomingCallSignaling(CallSignaling signaling) {
+    switch (signaling.type) {
+      case 'CALL_OFFER':
+        if (_callStatus == CallStatus.idle) {
+          _currentCallId = signaling.callId;
+          final peer = database.knownPeers[signaling.callerId] ??
+              Peer(
+                id: signaling.callerId,
+                name: signaling.callerName,
+                ip: '',
+                port: 45455,
+                publicKey: '',
+                platform: 'unknown',
+                lastSeen: DateTime.now(),
+              );
+          _activeCallPeer = peer;
+          _callStatus = CallStatus.incomingRinging;
+          notifyListeners();
+        }
+        break;
+      case 'CALL_ANSWER':
+        if (_callStatus == CallStatus.outgoingCalling &&
+            signaling.callId == _currentCallId &&
+            signaling.accepted == true) {
+          _callStatus = CallStatus.connected;
+          _startCallTimer();
+          notifyListeners();
+        } else {
+          _endCallInternal();
+        }
+        break;
+      case 'CALL_REJECT':
+      case 'CALL_END':
+        if (signaling.callId == _currentCallId) {
+          _endCallInternal();
+        }
+        break;
+    }
+  }
+
   @override
   void dispose() {
     _recordingTimer?.cancel();
+    _callTimer?.cancel();
     for (final timer in _typingTimers.values) {
       timer.cancel();
     }

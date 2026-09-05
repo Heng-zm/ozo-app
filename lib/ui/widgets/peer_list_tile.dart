@@ -70,6 +70,25 @@ class PeerListTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          if (peer.isRemote) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.purple.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.purple.withValues(alpha: 0.3)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.cloud_rounded, size: 12, color: Colors.purple),
+                  SizedBox(width: 4),
+                  Text('Remote', style: TextStyle(fontSize: 10, color: Colors.purple, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
           if (peer.hasIdentityConflict) ...[
             const Tooltip(
               message: 'Identity changed! Possible impersonation attempt.',
@@ -83,11 +102,13 @@ class PeerListTile extends StatelessWidget {
       subtitle: Padding(
         padding: const EdgeInsets.only(top: 2),
         child: Text(
-          isOnline ? '${peer.ip}:${peer.port}' : 'Last seen ${_formatLastSeen(peer.lastSeen)}',
+          peer.isRemote
+              ? 'Remote Cloudflare Tunnel'
+              : (isOnline ? '${peer.ip}:${peer.port}' : 'Last seen ${_formatLastSeen(peer.lastSeen)}'),
           style: TextStyle(
             fontSize: 12,
-            color: isOnline
-                ? TelegramTheme.onlineGreen
+            color: (isOnline || peer.isRemote)
+                ? (peer.isRemote ? Colors.purple : TelegramTheme.onlineGreen)
                 : (isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary),
           ),
         ),

@@ -121,4 +121,85 @@ void main() {
     expect(restored.isImage, isTrue);
     expect(restored.status, equals(MessageStatus.read));
   });
+
+  test('PeerConnectionLink generates and parses ozo:// and Cloudflare links', () {
+    final link = PeerConnectionLink(
+      id: 'peer-cf-1',
+      name: 'Alice Remote',
+      host: 'peaceful-tiger.trycloudflare.com',
+      port: 443,
+      publicKey: 'mock-pub-key',
+      platform: 'linux',
+      isSecure: true,
+    );
+
+    final uriStr = link.toUriString();
+    expect(uriStr, startsWith('ozo://connect?'));
+
+    final parsed = PeerConnectionLink.parse(uriStr);
+    expect(parsed, isNotNull);
+    expect(parsed!.id, equals('peer-cf-1'));
+    expect(parsed.name, equals('Alice Remote'));
+    expect(parsed.host, equals('peaceful-tiger.trycloudflare.com'));
+    expect(parsed.port, equals(443));
+    expect(parsed.publicKey, equals('mock-pub-key'));
+    expect(parsed.isSecure, isTrue);
+
+    // Parsing direct Cloudflare URL
+    final cfParsed = PeerConnectionLink.parse('https://mystic-orca.trycloudflare.com');
+    expect(cfParsed, isNotNull);
+    expect(cfParsed!.host, equals('mystic-orca.trycloudflare.com'));
+    expect(cfParsed.port, equals(443));
+    expect(cfParsed.isSecure, isTrue);
+  });
+
+  test('ChatMessage with quoted reply and emoji reactions', () {
+    final msg = ChatMessage(
+      id: 'reply-msg-1',
+      chatId: 'peer-1',
+      senderId: 'alice',
+      senderName: 'Alice',
+      recipientId: 'bob',
+      content: 'I agree completely!',
+      type: MessageType.text,
+      timestamp: DateTime.now(),
+      replyToId: 'original-msg-0',
+      replyToText: 'Should we release today?',
+      replyToSenderName: 'Bob',
+      reactions: {
+        '❤️': ['bob'],
+        '👍': ['alice', 'charlie'],
+      },
+    );
+
+    final json = msg.toJson();
+    expect(json['replyToId'], equals('original-msg-0'));
+    expect(json['replyToText'], equals('Should we release today?'));
+    expect(json['replyToSenderName'], equals('Bob'));
+    expect(json['reactions']['❤️'], equals(['bob']));
+    expect(json['reactions']['👍'], equals(['alice', 'charlie']));
+
+    final restored = ChatMessage.fromJson(json);
+    expect(restored.replyToId, equals('original-msg-0'));
+    expect(restored.replyToText, equals('Should we release today?'));
+    expect(restored.reactions['❤️'], equals(['bob']));
+    expect(restored.reactions['👍']?.length, equals(2));
+  });
+
+  test('CallSignaling model serialization and parsing', () {
+    final signaling = CallSignaling(
+      callId: 'call-12345',
+      callerId: 'alice',
+      callerName: 'Alice',
+      type: 'CALL_OFFER',
+    );
+
+    final json = signaling.toJson();
+    expect(json['callId'], equals('call-12345'));
+    expect(json['type'], equals('CALL_OFFER'));
+
+    final restored = CallSignaling.fromJson(json);
+    expect(restored.callId, equals('call-12345'));
+    expect(restored.callerName, equals('Alice'));
+  });
 }

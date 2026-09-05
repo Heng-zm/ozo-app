@@ -19,6 +19,9 @@ class P2pClient {
   // Callbacks for duplex reception on client socket
   void Function(String messageId, MessageStatus status)? onDeliveryReceipt;
   void Function(String peerId, bool isTyping)? onTyping;
+  void Function(String messageId, String emoji, String senderId)? onReactionReceived;
+  void Function(String messageId)? onMessageDeleted;
+  void Function(CallSignaling signaling)? onCallSignaling;
 
   P2pClient({
     required this.deviceId,
@@ -50,10 +53,23 @@ class P2pClient {
 
   Future<WebSocket?> _connect(Peer peer) async {
     try {
-      final uri = Uri.parse('ws://${peer.ip}:${peer.port}/ws');
+      Uri uri;
+      if (peer.remoteTunnelUrl != null && peer.remoteTunnelUrl!.isNotEmpty) {
+        final parsed = Uri.parse(peer.remoteTunnelUrl!);
+        final scheme = (parsed.scheme == 'https' || parsed.port == 443) ? 'wss' : 'ws';
+        final host = parsed.host.isNotEmpty ? parsed.host : peer.ip;
+        final port = parsed.port > 0 ? parsed.port : (scheme == 'wss' ? 443 : peer.port);
+        uri = Uri(scheme: scheme, host: host, port: port, path: '/ws');
+      } else if (peer.port == 443 || peer.ip.contains('trycloudflare.com')) {
+        final host = peer.ip.replaceAll('https://', '').replaceAll('http://', '').split('/').first;
+        uri = Uri(scheme: 'wss', host: host, port: 443, path: '/ws');
+      } else {
+        uri = Uri.parse('ws://${peer.ip}:${peer.port}/ws');
+      }
+
       final socket = await WebSocket.connect(
         uri.toString(),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 8));
 
       _sockets[peer.id] = socket;
 
@@ -76,6 +92,20 @@ class P2pClient {
               if (senderId != null) {
                 onTyping?.call(senderId, isTyping);
               }
+            } else if (type == 'REACTION') {
+              final messageId = msg['messageId'] as String;
+              final emoji = msg['emoji'] as String;
+              final senderId = msg['senderId'] as String? ?? peer.id;
+              onReactionReceived?.call(messageId, emoji, senderId);
+            } else if (type == 'DELETE_MSG') {
+              final messageId = msg['messageId'] as String;
+              onMessageDeleted?.call(messageId);
+            } else if (type == 'CALL_OFFER' ||
+                type == 'CALL_ANSWER' ||
+                type == 'CALL_REJECT' ||
+                type == 'CALL_END') {
+              final signaling = CallSignaling.fromJson(msg);
+              onCallSignaling?.call(signaling);
             }
           } catch (_) {}
         },
@@ -120,6 +150,9 @@ class P2pClient {
       'fileMetadata': message.fileMetadata?.toJson(),
       'voiceDuration': message.voiceDurationSeconds,
       'amplitudes': message.waveformAmplitudes,
+      'replyToId': message.replyToId,
+      'replyToText': message.replyToText,
+      'replyToSenderName': message.replyToSenderName,
     });
 
     try {
@@ -269,6 +302,64 @@ class P2pClient {
       return true;
     } catch (_) {
       _sockets.remove(memberPeer.id);
+      return false;
+    }
+  }
+
+  /// Dispatches an emoji reaction for a message
+  Future<bool> sendReaction({
+    required Peer peer,
+    required String messageId,
+    required String emoji,
+  }) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return false;
+    try {
+      socket.add(jsonEncode({
+        'type': 'REACTION',
+        'messageId': messageId,
+        'emoji': emoji,
+        'senderId': deviceId,
+      }));
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
+      return false;
+    }
+  }
+
+  /// Sends a delete-for-everyone request to a peer
+  Future<bool> sendDeleteMessage({
+    required Peer peer,
+    required String messageId,
+  }) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return false;
+    try {
+      socket.add(jsonEncode({
+        'type': 'DELETE_MSG',
+        'messageId': messageId,
+        'senderId': deviceId,
+      }));
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
+      return false;
+    }
+  }
+
+  /// Dispatches a call signaling packet
+  Future<bool> sendCallSignaling({
+    required Peer peer,
+    required CallSignaling signaling,
+  }) async {
+    final socket = await getOrConnect(peer);
+    if (socket == null) return false;
+    try {
+      socket.add(jsonEncode(signaling.toJson()));
+      return true;
+    } catch (_) {
+      _sockets.remove(peer.id);
       return false;
     }
   }

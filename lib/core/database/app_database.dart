@@ -135,6 +135,8 @@ class AppDatabase {
     await _persistPeers();
   }
 
+  Future<void> upsertPeer(Peer peer) => savePeer(peer);
+
   Future<void> saveGroup(GroupChat group) async {
     _groups[group.id] = group;
     await _persistGroups();
@@ -192,6 +194,20 @@ class AppDatabase {
     if (_messagesFile == null) return;
     final jsonList = _messages.map((m) => m.toJson()).toList();
     await _messagesFile!.writeAsString(jsonEncode(jsonList));
+  }
+
+  Future<void> deleteMessage(String messageId) async {
+    _messages.removeWhere((m) => m.id == messageId);
+    await _persistMessages();
+  }
+
+  Future<void> updateMessageReactions(String messageId, Map<String, List<String>> reactions) async {
+    final index = _messages.indexWhere((m) => m.id == messageId);
+    if (index >= 0) {
+      final old = _messages[index];
+      _messages[index] = old.copyWith(reactions: reactions);
+      await _persistMessages();
+    }
   }
 
   List<ChatMessage> getMessagesForChat(String chatId) {

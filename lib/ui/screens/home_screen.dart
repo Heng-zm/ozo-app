@@ -7,6 +7,8 @@ import '../theme/app_theme.dart';
 import '../widgets/active_chat_view.dart';
 import '../widgets/group_create_dialog.dart';
 import '../widgets/peer_list_tile.dart';
+import '../widgets/remote_connection_dialog.dart';
+import '../widgets/transfer_queue_sheet.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -254,6 +256,25 @@ class HomeScreen extends StatelessWidget {
                   fontSize: 16,
                 ),
               ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.cloud_sync_outlined, size: 20),
+              tooltip: 'Remote P2P / Cloudflare',
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (_) => const RemoteConnectionDialog(),
+                );
+              },
+            ),
+            IconButton(
+              icon: Badge(
+                isLabelVisible: provider.transferManager.activeTransfers.isNotEmpty,
+                label: Text('${provider.transferManager.activeTransfers.length}'),
+                child: const Icon(Icons.swap_vert_rounded, size: 20),
+              ),
+              tooltip: 'Transfer Manager',
+              onPressed: () => TransferQueueSheet.show(context),
             ),
             IconButton(
               icon: const Icon(Icons.group_add_outlined, size: 20),
