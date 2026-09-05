@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
@@ -176,26 +177,36 @@ class ChatProvider extends ChangeNotifier {
 
   bool isPeerTyping(String peerId) => _typingPeers[peerId] ?? false;
 
-  Future<void> initialize({int? customPort, String? customDeviceName}) async {
-    if (_isInitialized) return;
+  int _instanceIndex = 1;
+  int get instanceIndex => _instanceIndex;
 
+  Future<void> initialize({
+    int? customPort,
+    String? customDeviceName,
+    int instanceIndex = 1,
+  }) async {
+    if (_isInitialized) return;
+    _instanceIndex = instanceIndex;
+
+    final prefix = instanceIndex > 1 ? 'inst${instanceIndex}_' : '';
     final prefs = await SharedPreferences.getInstance();
 
-    // Resolve device ID
-    _deviceId = prefs.getString('lan_tg_device_id') ?? '';
+    // Resolve device ID with instance isolation
+    _deviceId = prefs.getString('${prefix}lan_tg_device_id') ?? '';
     if (_deviceId.isEmpty) {
       _deviceId = _uuid.v4();
-      await prefs.setString('lan_tg_device_id', _deviceId);
+      await prefs.setString('${prefix}lan_tg_device_id', _deviceId);
     }
 
     // Resolve device name
     if (customDeviceName != null && customDeviceName.isNotEmpty) {
       _deviceName = customDeviceName;
     } else {
-      _deviceName = prefs.getString('lan_tg_device_name') ?? '';
+      _deviceName = prefs.getString('${prefix}lan_tg_device_name') ?? '';
       if (_deviceName.isEmpty) {
-        _deviceName = _generateDefaultDeviceName();
-        await prefs.setString('lan_tg_device_name', _deviceName);
+        final defaultName = _generateDefaultDeviceName();
+        _deviceName = instanceIndex > 1 ? '$defaultName ($instanceIndex)' : defaultName;
+        await prefs.setString('${prefix}lan_tg_device_name', _deviceName);
       }
     }
 
@@ -212,12 +223,13 @@ class ChatProvider extends ChangeNotifier {
       _platform = 'ios';
     }
 
-    // 1. Initialize Cryptography
-    await cryptoService.initialize();
+    // 1. Initialize Cryptography with isolated keypair
+    await cryptoService.initialize(keyPrefix: prefix);
 
-    // 2. Initialize Persistent Database & Security
-    await database.initialize();
-    await security.initialize();
+    // 2. Initialize Persistent Database & Security with isolated DB
+    final dbName = instanceIndex > 1 ? 'lan_telegram_instance$instanceIndex.db' : 'lan_telegram.db';
+    await database.initialize(dbName: dbName);
+    await security.initialize(prefix: prefix);
 
     // Ensure account exists
     if (database.accounts.isEmpty) {
@@ -226,7 +238,7 @@ class ChatProvider extends ChangeNotifier {
         username: 'user_${_deviceId.length >= 4 ? _deviceId.substring(0, 4) : 'me'}',
         displayName: _deviceName,
         bio: 'Hey there! Using ozo-app',
-        avatarColorIndex: 0,
+        avatarColorIndex: (instanceIndex - 1) % 6,
         avatarEmoji: '👤',
         isCurrent: true,
       );
@@ -239,9 +251,10 @@ class ChatProvider extends ChangeNotifier {
       }
     }
 
-    // 3. Start Embedded P2P Server
+    // 3. Start Embedded P2P Server (Instance 1: 45455, Instance 2: 45456, etc.)
+    final requestedPort = customPort ?? (AppConstants.defaultP2pPort + (instanceIndex - 1));
     server = P2pServer(
-      requestedPort: customPort ?? AppConstants.defaultP2pPort,
+      requestedPort: requestedPort,
       deviceId: _deviceId,
       deviceName: _deviceName,
       cryptoService: cryptoService,
@@ -321,6 +334,61 @@ class ChatProvider extends ChangeNotifier {
 
     _isInitialized = true;
     notifyListeners();
+
+    // If running as secondary or multiple instance on same PC, automatically announce to primary
+    if (instanceIndex > 1) {
+      _autoConnectToLocalPrimaryInstance();
+    }
+  }
+
+  /// Automatically discovers and links to primary instance on local machine
+  Future<void> _autoConnectToLocalPrimaryInstance() async {
+    for (int port = AppConstants.defaultP2pPort; port < _serverPort; port++) {
+      await connectToLocalPort(port);
+    }
+  }
+
+  /// Directly links to another local instance on the same PC by port
+  Future<bool> connectToLocalPort(int targetPort) async {
+    if (targetPort == _serverPort) return false;
+    try {
+      final httpClient = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      final req = await httpClient.postUrl(Uri.parse('http://127.0.0.1:$targetPort/api/connect'));
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({
+        'id': _deviceId,
+        'name': _deviceName,
+        'pubKey': cryptoService.publicKeyBase64 ?? '',
+        'platform': _platform,
+      }));
+      final resp = await req.close().timeout(const Duration(seconds: 2));
+      if (resp.statusCode == HttpStatus.ok) {
+        final body = await utf8.decodeStream(resp);
+        final json = jsonDecode(body) as Map<String, dynamic>;
+        final hostId = json['hostId'] as String?;
+        final hostName = json['hostName'] as String? ?? 'Local Device';
+        final hostPubKey = json['pubKey'] as String? ?? '';
+        final hostPort = json['port'] as int? ?? targetPort;
+
+        if (hostId != null && hostId != _deviceId && hostPubKey.isNotEmpty) {
+          final peer = Peer(
+            id: hostId,
+            name: hostName,
+            ip: '127.0.0.1',
+            port: hostPort,
+            publicKey: hostPubKey,
+            platform: 'desktop',
+            lastSeen: DateTime.now(),
+          );
+          await database.upsertPeer(peer);
+          notifyListeners();
+          httpClient.close(force: true);
+          return true;
+        }
+      }
+      httpClient.close(force: true);
+    } catch (_) {}
+    return false;
   }
 
   void setActivePeer(Peer? peer) {
@@ -1020,12 +1088,41 @@ class ChatProvider extends ChangeNotifier {
     final link = PeerConnectionLink.parse(input);
     if (link == null) return false;
 
+    String peerId = link.id;
+    String peerName = link.name;
+    String peerKey = link.publicKey;
+
+    // If public key is missing (e.g. manual IP:Port or localhost), query target via /api/connect
+    if (peerKey.isEmpty) {
+      try {
+        final httpClient = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+        final scheme = link.isSecure ? 'https' : (link.port == 443 ? 'https' : 'http');
+        final req = await httpClient.postUrl(Uri.parse('$scheme://${link.host}:${link.port}/api/connect'));
+        req.headers.contentType = ContentType.json;
+        req.write(jsonEncode({
+          'id': _deviceId,
+          'name': _deviceName,
+          'pubKey': cryptoService.publicKeyBase64 ?? '',
+          'platform': _platform,
+        }));
+        final resp = await req.close().timeout(const Duration(seconds: 3));
+        if (resp.statusCode == HttpStatus.ok) {
+          final body = await utf8.decodeStream(resp);
+          final json = jsonDecode(body) as Map<String, dynamic>;
+          if (json['hostId'] != null) peerId = json['hostId'] as String;
+          if (json['hostName'] != null) peerName = json['hostName'] as String;
+          if (json['pubKey'] != null) peerKey = json['pubKey'] as String;
+        }
+        httpClient.close(force: true);
+      } catch (_) {}
+    }
+
     final peer = Peer(
-      id: link.id,
-      name: link.name,
+      id: peerId,
+      name: peerName,
       ip: link.host,
       port: link.port,
-      publicKey: link.publicKey,
+      publicKey: peerKey,
       platform: link.platform,
       lastSeen: DateTime.now(),
       isRemote: true,

@@ -251,6 +251,8 @@ class P2pServer {
             'hostId': deviceId,
             'hostName': deviceName,
             'hostPubKey': cryptoService.publicKeyBase64,
+            'pubKey': cryptoService.publicKeyBase64,
+            'port': _actualPort,
             'safetyFingerprint': safetyFingerprint,
             'wsUrl': '${isHttps ? 'wss' : 'ws'}://$hostHeader/ws',
             'message': 'Peer registered successfully. Connect to wsUrl for E2EE messaging.',
@@ -635,7 +637,7 @@ class P2pServer {
   }
 
   Future<void> stop() async {
-    for (final socket in _openWebSockets) {
+    for (final socket in _openWebSockets.toList()) {
       try {
         await socket.close();
       } catch (_) {}

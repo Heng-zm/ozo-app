@@ -311,4 +311,127 @@ void main() {
       } catch (_) {}
     }
   });
+
+  test('Two Instances on 1 PC: Database isolation and Local Loopback auto-connect', () async {
+    final sharedDocsDir = await Directory.systemTemp.createTemp('ozo_1pc_shared_');
+    final httpClient = HttpClient();
+
+    // Instance 1 setup
+    final crypto1 = CryptoService();
+    await crypto1.initialize(keyPrefix: 'inst1');
+    final db1 = AppDatabase();
+    await db1.initialize(customDirectory: sharedDocsDir, dbName: 'lan_telegram_instance1.db');
+
+    final server1 = P2pServer(
+      requestedPort: 47020,
+      deviceId: 'pc-device-001',
+      deviceName: 'My PC (Device 1)',
+      cryptoService: crypto1,
+    );
+    final port1 = await server1.start();
+    expect(port1, equals(47020));
+
+    server1.onPeerAnnouncedViaApi = (peer) async {
+      await db1.upsertPeer(peer);
+    };
+
+    // Instance 2 setup in the SAME folder
+    final crypto2 = CryptoService();
+    await crypto2.initialize(keyPrefix: 'inst2');
+    final db2 = AppDatabase();
+    await db2.initialize(customDirectory: sharedDocsDir, dbName: 'lan_telegram_instance2.db');
+
+    final server2 = P2pServer(
+      requestedPort: 47021,
+      deviceId: 'pc-device-002',
+      deviceName: 'My PC (Device 2)',
+      cryptoService: crypto2,
+    );
+    final port2 = await server2.start();
+    expect(port2, equals(47021));
+
+    try {
+      // Device 2 announces to Device 1 on 127.0.0.1:47020 via /api/connect
+      final req = await httpClient.postUrl(Uri.parse('http://127.0.0.1:$port1/api/connect'));
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({
+        'id': 'pc-device-002',
+        'name': 'My PC (Device 2)',
+        'pubKey': crypto2.publicKeyBase64,
+        'platform': 'windows',
+      }));
+      final resp = await req.close();
+      expect(resp.statusCode, equals(HttpStatus.ok));
+
+      final body = await utf8.decodeStream(resp);
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      expect(json['success'], isTrue);
+      expect(json['hostId'], equals('pc-device-001'));
+      expect(json['pubKey'], equals(crypto1.publicKeyBase64));
+
+      // Register Device 1 in Device 2's database
+      final dev1Peer = Peer(
+        id: json['hostId'] as String,
+        name: json['hostName'] as String,
+        ip: '127.0.0.1',
+        port: port1,
+        publicKey: json['pubKey'] as String,
+        platform: 'windows',
+        lastSeen: DateTime.now(),
+      );
+      await db2.upsertPeer(dev1Peer);
+
+      // Verify both databases stored each other with correct distinct public keys
+      expect(db1.knownPeers.containsKey('pc-device-002'), isTrue);
+      expect(db1.knownPeers['pc-device-002']!.publicKey, equals(crypto2.publicKeyBase64));
+
+      expect(db2.knownPeers.containsKey('pc-device-001'), isTrue);
+      expect(db2.knownPeers['pc-device-001']!.publicKey, equals(crypto1.publicKeyBase64));
+
+      // Establish WebSocket and send E2EE message from Device 2 to Device 1
+      final client2 = P2pClient(
+        deviceId: 'pc-device-002',
+        deviceName: 'My PC (Device 2)',
+        cryptoService: crypto2,
+      );
+
+      final msgCompleter = Completer<ChatMessage>();
+      server1.onMessageReceived = (msg) {
+        msgCompleter.complete(msg);
+      };
+
+      final socket = await client2.getOrConnect(dev1Peer);
+      expect(socket, isNotNull);
+
+      final sendSuccess = await client2.sendMessage(
+        peer: dev1Peer,
+        message: ChatMessage(
+          id: 'msg-local-1pc-001',
+          chatId: 'pc-device-001',
+          senderId: 'pc-device-002',
+          senderName: 'My PC (Device 2)',
+          recipientId: 'pc-device-001',
+          content: 'Hello from Device 2 on the same PC!',
+          type: MessageType.text,
+          timestamp: DateTime.now(),
+        ),
+      );
+      expect(sendSuccess, isTrue);
+
+      final received = await msgCompleter.future.timeout(const Duration(seconds: 4));
+      expect(received.content, equals('Hello from Device 2 on the same PC!'));
+      expect(received.senderId, equals('pc-device-002'));
+
+      client2.close();
+    } finally {
+      httpClient.close(force: true);
+      await server1.stop();
+      await server2.stop();
+      await db1.close();
+      await db2.close();
+      try {
+        await sharedDocsDir.delete(recursive: true);
+      } catch (_) {}
+    }
+  });
 }

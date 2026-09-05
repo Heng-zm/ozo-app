@@ -59,7 +59,7 @@ class AppDatabase {
     }
   }
 
-  Future<void> initialize({Directory? customDirectory}) async {
+  Future<void> initialize({Directory? customDirectory, String? dbName}) async {
     Directory dbDir;
     if (customDirectory != null) {
       dbDir = Directory(p.join(customDirectory.path, 'lan_telegram_data'));
@@ -81,7 +81,8 @@ class AppDatabase {
       sqflite.databaseFactory = databaseFactoryFfi;
     }
 
-    final dbPath = p.join(dbDir.path, 'lan_telegram.db');
+    final dbFileName = dbName ?? 'lan_telegram.db';
+    final dbPath = p.join(dbDir.path, dbFileName);
     _db = await sqflite.openDatabase(
       dbPath,
       version: 2,

@@ -26,9 +26,12 @@ class CryptoService {
   SimplePublicKey? get publicKey => _publicKey;
 
   /// Initializes or restores the local device X25519 keypair
-  Future<void> initialize() async {
+  Future<void> initialize({String? keyPrefix}) async {
     final prefs = await SharedPreferences.getInstance();
-    final savedPrivateKeyBase64 = prefs.getString('lan_tg_private_key');
+    final prefKey = (keyPrefix != null && keyPrefix.isNotEmpty)
+        ? '${keyPrefix}_lan_tg_private_key'
+        : 'lan_tg_private_key';
+    final savedPrivateKeyBase64 = prefs.getString(prefKey);
 
     if (savedPrivateKeyBase64 != null) {
       final privateKeyBytes = base64Decode(savedPrivateKeyBase64);
@@ -36,7 +39,7 @@ class CryptoService {
     } else {
       _keyPair = await _x25519.newKeyPair();
       final privateKey = await _keyPair!.extractPrivateKeyBytes();
-      await prefs.setString('lan_tg_private_key', base64Encode(privateKey));
+      await prefs.setString(prefKey, base64Encode(privateKey));
     }
 
     _publicKey = await _keyPair!.extractPublicKey();

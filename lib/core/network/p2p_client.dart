@@ -480,7 +480,7 @@ class P2pClient {
   }
 
   void close() {
-    for (final s in _sockets.values) {
+    for (final s in _sockets.values.toList()) {
       try {
         s.close();
       } catch (_) {}

@@ -208,6 +208,15 @@ class DiscoveryService {
         AppConstants.defaultDiscoveryPort,
       );
     } catch (_) {}
+
+    // 4. Local loopback broadcast (for 2+ instances running on same PC)
+    try {
+      _socket?.send(
+        data,
+        InternetAddress.loopbackIPv4,
+        AppConstants.defaultDiscoveryPort,
+      );
+    } catch (_) {}
   }
 
   void _handleDatagram(Datagram datagram) {

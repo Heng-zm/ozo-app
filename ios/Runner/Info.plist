@@ -95,5 +95,14 @@
 	<!-- App Lock & Biometrics -->
 	<key>NSFaceIDUsageDescription</key>
 	<string>OZO uses Face ID to securely unlock your app and safeguard your private messages.</string>
+
+	<!-- Local Network & Internet Security Configuration -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

@@ -294,11 +294,35 @@ class _RemoteConnectionDialogState extends State<RemoteConnectionDialog>
                         const SizedBox(height: 16),
                         TextField(
                           controller: _connectInputController,
-                          maxLines: 3,
+                          maxLines: 2,
                           decoration: InputDecoration(
-                            hintText: 'Paste ozo://connect?... or https://xyz.trycloudflare.com',
+                            hintText: 'Paste ozo://connect?... or 127.0.0.1:45456 or https://...',
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                           ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Quick connect on this PC:',
+                          style: theme.textTheme.labelSmall?.copyWith(color: Colors.grey),
+                        ),
+                        const SizedBox(height: 4),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            ActionChip(
+                              visualDensity: VisualDensity.compact,
+                              avatar: const Icon(Icons.devices_rounded, size: 14),
+                              label: const Text('Device 1 (45455)', style: TextStyle(fontSize: 11)),
+                              onPressed: () => _connectInputController.text = '127.0.0.1:45455',
+                            ),
+                            ActionChip(
+                              visualDensity: VisualDensity.compact,
+                              avatar: const Icon(Icons.devices_rounded, size: 14),
+                              label: const Text('Device 2 (45456)', style: TextStyle(fontSize: 11)),
+                              onPressed: () => _connectInputController.text = '127.0.0.1:45456',
+                            ),
+                          ],
                         ),
                         if (_connectError != null) ...[
                           const SizedBox(height: 8),

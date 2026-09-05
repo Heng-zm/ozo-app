@@ -26,6 +26,9 @@ class SecurityService extends ChangeNotifier {
   static const String _prefBiometric = 'security_biometric_enabled';
   static const String _prefLastActive = 'security_last_active_time';
 
+  String _prefix = '';
+  String _k(String key) => _prefix.isEmpty ? key : '${_prefix}_$key';
+
   bool _isLocked = false;
   SecuritySettings _settings = const SecuritySettings();
 
@@ -33,13 +36,14 @@ class SecurityService extends ChangeNotifier {
   bool get isPinConfigured => _settings.isPinEnabled && _settings.pinHash.isNotEmpty;
   SecuritySettings get settings => _settings;
 
-  Future<void> initialize() async {
+  Future<void> initialize({String? prefix}) async {
+    _prefix = prefix ?? '';
     final prefs = await SharedPreferences.getInstance();
-    final isPinEnabled = prefs.getBool(_prefPinEnabled) ?? false;
-    final pinHash = prefs.getString(_prefPinHash) ?? '';
-    final pinSalt = prefs.getString(_prefPinSalt) ?? '';
-    final autoLock = prefs.getInt(_prefAutoLock) ?? 5;
-    final biometric = prefs.getBool(_prefBiometric) ?? false;
+    final isPinEnabled = prefs.getBool(_k(_prefPinEnabled)) ?? false;
+    final pinHash = prefs.getString(_k(_prefPinHash)) ?? '';
+    final pinSalt = prefs.getString(_k(_prefPinSalt)) ?? '';
+    final autoLock = prefs.getInt(_k(_prefAutoLock)) ?? 5;
+    final biometric = prefs.getBool(_k(_prefBiometric)) ?? false;
 
     _settings = SecuritySettings(
       isPinEnabled: isPinEnabled,
@@ -118,9 +122,9 @@ class SecurityService extends ChangeNotifier {
     );
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_prefPinEnabled, true);
-    await prefs.setString(_prefPinHash, hash);
-    await prefs.setString(_prefPinSalt, salt);
+    await prefs.setBool(_k(_prefPinEnabled), true);
+    await prefs.setString(_k(_prefPinHash), hash);
+    await prefs.setString(_k(_prefPinSalt), salt);
 
     _isLocked = false;
     updateActivity();
@@ -137,10 +141,10 @@ class SecurityService extends ChangeNotifier {
     );
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_prefPinEnabled, false);
-    await prefs.remove(_prefPinHash);
-    await prefs.remove(_prefPinSalt);
-    await prefs.setBool(_prefBiometric, false);
+    await prefs.setBool(_k(_prefPinEnabled), false);
+    await prefs.remove(_k(_prefPinHash));
+    await prefs.remove(_k(_prefPinSalt));
+    await prefs.setBool(_k(_prefBiometric), false);
 
     _isLocked = false;
     notifyListeners();
@@ -150,7 +154,7 @@ class SecurityService extends ChangeNotifier {
   Future<void> setAutoLockMinutes(int minutes) async {
     _settings = _settings.copyWith(autoLockMinutes: minutes);
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_prefAutoLock, minutes);
+    await prefs.setInt(_k(_prefAutoLock), minutes);
     notifyListeners();
   }
 
@@ -158,7 +162,7 @@ class SecurityService extends ChangeNotifier {
   Future<void> setBiometricEnabled(bool enabled) async {
     _settings = _settings.copyWith(isBiometricEnabled: enabled);
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_prefBiometric, enabled);
+    await prefs.setBool(_k(_prefBiometric), enabled);
     notifyListeners();
   }
 
@@ -166,7 +170,7 @@ class SecurityService extends ChangeNotifier {
   void updateActivity() {
     final now = DateTime.now().millisecondsSinceEpoch;
     SharedPreferences.getInstance().then((prefs) {
-      prefs.setInt(_prefLastActive, now);
+      prefs.setInt(_k(_prefLastActive), now);
     });
   }
 
@@ -181,7 +185,7 @@ class SecurityService extends ChangeNotifier {
     }
 
     final prefs = await SharedPreferences.getInstance();
-    final lastActive = prefs.getInt(_prefLastActive) ?? 0;
+    final lastActive = prefs.getInt(_k(_prefLastActive)) ?? 0;
     if (lastActive == 0) return;
 
     final now = DateTime.now().millisecondsSinceEpoch;
