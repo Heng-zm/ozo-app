@@ -130,10 +130,31 @@ jobs:
           zip -r ../../../../ozo-app-macos.zip *.app
       - name: Build iOS App (.ipa)
         run: |
+          PBX="ios/Runner.xcodeproj/project.pbxproj"
+          sed -i '' 's/DEVELOPMENT_TEAM = [^;]*;//g'                               "$PBX"
+          sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = [^;]*;//g'                 "$PBX"
+          sed -i '' 's/PROVISIONING_PROFILE = [^;]*;//g'                           "$PBX"
+          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g'   "$PBX"
+          sed -i '' 's/CODE_SIGNING_REQUIRED = YES;/CODE_SIGNING_REQUIRED = NO;/g' "$PBX"
+          sed -i '' 's/CODE_SIGN_IDENTITY = [^;]*;/CODE_SIGN_IDENTITY = "";/g'     "$PBX"
+          sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = [^;]*;/ "CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";/g' "$PBX"
+          sed -i '' '/CODE_SIGNING_ALLOWED/d'                                      "$PBX"
+
+          echo "CODE_SIGNING_ALLOWED=NO"  >> ios/Flutter/Release.xcconfig
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Release.xcconfig
+          echo "CODE_SIGN_IDENTITY="      >> ios/Flutter/Release.xcconfig
+
           flutter build ios --release --no-codesign
+
+          APP_PATH=$(find build -name "Runner.app" -type d | grep -E "Release-iphoneos|iphoneos" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Runner.app not found."
+            exit 1
+          fi
+
           mkdir -p Payload
-          cp -R build/ios/iphoneos/Runner.app Payload/
-          zip -qr ozo-app-ios.ipa Payload
+          cp -R "$APP_PATH" Payload/Runner.app
+          zip -qr -9 ozo-app-ios.ipa Payload
           rm -rf Payload
           shasum -a 256 ozo-app-ios.ipa > ozo-app-ios.ipa.sha256
       - name: Upload macOS App

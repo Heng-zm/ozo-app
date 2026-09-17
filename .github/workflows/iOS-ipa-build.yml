@@ -2,6 +2,19 @@ name: iOS-ipa-build
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'GitHub Release Tag (optional, e.g. v1.1.0)'
+        required: false
+        default: ''
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'ios/**'
+      - 'lib/**'
+      - 'pubspec.yaml'
+      - '.github/workflows/iOS-ipa-build.yml'
+    tags: [ 'v*' ]
 
 permissions:
   contents: write
@@ -10,7 +23,7 @@ permissions:
 
 jobs:
   build-ios:
-    name: 🎉 iOS Release Build
+    name: 🎉 iOS Release Build (.ipa)
     runs-on: macos-latest
 
     steps:
@@ -20,25 +33,58 @@ jobs:
       - name: 🛠️ Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.4'
           channel: 'stable'
           cache: true
 
       - name: 📦 Install pub dependencies
         run: flutter pub get
 
-      - name: 🔧 Generate Xcode config (config-only, no build)
+      - name: 🔧 Generate Xcode config (config-only)
         run: |
           flutter build ios --release --config-only --no-codesign \
             --build-number=${{ github.run_number }} \
             --build-name=1.1.${{ github.run_number }}
 
-      - name: 🦕 Pod install
+      - name: 🦕 CocoaPods Setup
         run: |
-          cd ios
-          pod install --repo-update
+          if [ -f "ios/Podfile" ]; then
+            echo "📦 Podfile found. Running pod install..."
+            cd ios
+            pod install --repo-update || pod install
+            cd ..
+          else
+            echo "ℹ️ No Podfile present; skipping CocoaPods install."
+          fi
 
-      - name: 🔓 Patch Xcode signing (unsigned / sideload build)
+      - name: 🔐 Setup Apple Signing Certificate (Optional)
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'ozo_temp_keychain_pwd' }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          CERT_PATH=$RUNNER_TEMP/build_cert.p12
+          echo -n "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o $CERT_PATH
+          security import $CERT_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
+          echo -n "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode -o $PROFILE_PATH
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PROFILE_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+          echo "✅ Apple Developer Signing Certificate configured."
+
+      - name: 🔓 Patch Xcode signing (for unsigned sideload build)
+        if: env.APPLE_CERTIFICATE_BASE64 == ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
         run: |
           PBX="ios/Runner.xcodeproj/project.pbxproj"
 
@@ -47,8 +93,9 @@ jobs:
           sed -i '' 's/PROVISIONING_PROFILE = [^;]*;//g'                           "$PBX"
           sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g'   "$PBX"
           sed -i '' 's/CODE_SIGNING_REQUIRED = YES;/CODE_SIGNING_REQUIRED = NO;/g' "$PBX"
-          sed -i '' 's/CODE_SIGN_IDENTITY = [^;]*;//g'                             "$PBX"
-          sed -i '' '/CODE_SIGNING_ALLOWED = YES;/d'                               "$PBX"
+          sed -i '' 's/CODE_SIGN_IDENTITY = [^;]*;/CODE_SIGN_IDENTITY = "";/g'     "$PBX"
+          sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = [^;]*;/ "CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";/g' "$PBX"
+          sed -i '' '/CODE_SIGNING_ALLOWED/d'                                      "$PBX"
 
           {
             echo ""
@@ -64,46 +111,70 @@ jobs:
             [ -f "$f" ] && {
               echo "CODE_SIGNING_ALLOWED=NO"  >> "$f"
               echo "CODE_SIGNING_REQUIRED=NO" >> "$f"
+              echo "CODE_SIGNING_IDENTITY="      >> "$f"
             }
           done
 
-          echo "✅ Signing patches applied."
+          echo "✅ Sideload signing bypass patches applied."
 
-      - name: 🏗️ Build iOS app (unsigned, xcodebuild)
+      - name: 🏗️ Build iOS Application
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
         run: |
-          xcodebuild \
-            -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
-            MARKETING_VERSION=1.1.${{ github.run_number }} \
-            build
-
-      - name: 📦 Package IPA for sideloading
-        run: |
-          APP_PATH=$(find build/DerivedData \
-            -name "Runner.app" \
-            -path "*/Release-iphoneos/*" \
-            | head -1)
-
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ Runner.app not found. Listing DerivedData:"
-            find build/DerivedData -name "*.app" || true
-            exit 1
+          if [ -n "$APPLE_CERTIFICATE_BASE64" ]; then
+            echo "Building signed iOS archive via Flutter..."
+            flutter build ipa --release \
+              --build-number=${{ github.run_number }} \
+              --build-name=1.1.${{ github.run_number }}
+          else
+            echo "Building unsigned iOS app..."
+            flutter build ios --release --no-codesign \
+              --build-number=${{ github.run_number }} \
+              --build-name=1.1.${{ github.run_number }}
           fi
 
-          echo "✅ Found: $APP_PATH"
-          mkdir -p Payload
-          cp -r "$APP_PATH" Payload/Runner.app
-          zip -qq -r -9 ozo-app-ios.ipa Payload
-          echo "✅ IPA size: $(du -sh ozo-app-ios.ipa | cut -f1)"
+      - name: 📦 Package .ipa for Sideloading / Distribution
+        run: |
+          VERSION="1.1.${{ github.run_number }}"
+
+          if ls build/ios/ipa/*.ipa 1> /dev/null 2>&1; then
+            echo "Found Flutter-exported IPA..."
+            cp build/ios/ipa/*.ipa ozo-app-ios.ipa
+          else
+            echo "Packaging Runner.app into standard Payload directory..."
+            APP_PATH=$(find build -name "Runner.app" -type d | grep -E "Release-iphoneos|iphoneos" | head -n 1)
+
+            if [ -z "$APP_PATH" ]; then
+              echo "❌ Runner.app not found. Searching build directory:"
+              find build -name "*.app" -type d || true
+              exit 1
+            fi
+
+            echo "✅ Located: $APP_PATH"
+            mkdir -p Payload
+            cp -R "$APP_PATH" Payload/Runner.app
+            zip -qr -9 ozo-app-ios.ipa Payload
+            rm -rf Payload
+          fi
+
+          cp ozo-app-ios.ipa "OZO-v${VERSION}.ipa"
+          shasum -a 256 ozo-app-ios.ipa > ozo-app-ios.ipa.sha256
+          shasum -a 256 "OZO-v${VERSION}.ipa" > "OZO-v${VERSION}.ipa.sha256"
+
+          echo "=== Built IPA Package Details ==="
+          ls -lh ozo-app-ios.ipa "OZO-v${VERSION}.ipa"
+          cat ozo-app-ios.ipa.sha256
+
+      - name: 📤 Upload IPA to Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ozo-app-ios-ipa
+          path: |
+            ozo-app-ios.ipa
+            ozo-app-ios.ipa.sha256
+            OZO-v*.ipa
+            OZO-v*.ipa.sha256
+          retention-days: 30
 
       # ---------------------------------------------------------------
       # OTA: Generate manifest.plist + install page hosted on gh-pages
@@ -199,32 +270,41 @@ jobs:
           echo "MANIFEST_URL=${MANIFEST_URL}" >> $GITHUB_ENV
           echo "PAGES_URL=${PAGES_URL}" >> $GITHUB_ENV
 
-      - name: 🚀 Upload IPA to GitHub Releases
-        uses: svenstaro/upload-release-action@v2
+      - name: 🚀 Publish to GitHub Releases
+        if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && !cancelled()
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ozo-app-ios.ipa
-          asset_name: OZO-v1.1.${{ github.run_number }}.ipa
-          tag: v1.1.${{ github.run_number }}
-          overwrite: true
+          tag_name: ${{ (github.event.inputs != null && github.event.inputs.release_tag != '') && github.event.inputs.release_tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.1.{0}', github.run_number)) }}
+          name: ${{ (github.event.inputs != null && github.event.inputs.release_tag != '') && github.event.inputs.release_tag || format('OZO Messenger v1.1.{0}', github.run_number) }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            ozo-app-ios.ipa
+            ozo-app-ios.ipa.sha256
+            OZO-v*.ipa
+            OZO-v*.ipa.sha256
           body: |
             ## ⚡ OZO Messenger — v1.1.${{ github.run_number }}
 
             | Field | Value |
             |---|---|
-            | Platform | iOS (unsigned OTA / Sideload) |
+            | Platform | iOS (.ipa) |
             | Bundle ID | com.antigravity.lan.lanTelegram |
-            | Build | ${{ github.run_number }} |
+            | Build Run | ${{ github.run_number }} |
 
-            ### 📲 Direct Install (no PC needed)
-            Open this link **in Safari on your iPhone**:
+            ### 📲 Install Methods
+            1. **Sideload (No Jailbreak Needed)**:
+               - Install using [AltStore](https://altstore.io), [Sideloadly](https://sideloadly.io), [TrollStore](https://trollstore.app), [Scarlet](https://usescarlet.com), or [LiveContainer](https://github.com/khanhduytran0/LiveContainer).
+            2. **Direct Safari Install (if Pages enabled)**:
+               - Open: ${{ env.PAGES_URL }} on iPhone Safari.
 
-            👉 ${{ env.PAGES_URL }}
-
-            > ⚠️ Unsigned build — device UDID must be registered, or use Sideloadly/AltStore/TrollStore.
-
-      # Deploy the OTA page to GitHub Pages so the install link is always live
+      # Deploy the OTA page to GitHub Pages (continue-on-error ensures job succeeds even if Pages is disabled)
       - name: 📤 Deploy OTA page to GitHub Pages
+        if: !cancelled()
+        continue-on-error: true
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
