@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class CryptoService {
   static final CryptoService _instance = CryptoService._internal();
   factory CryptoService() => _instance;
+  factory CryptoService.isolated() => CryptoService._internal();
   CryptoService._internal();
 
   final _x25519 = X25519();
@@ -27,6 +28,7 @@ class CryptoService {
 
   /// Initializes or restores the local device X25519 keypair
   Future<void> initialize({String? keyPrefix}) async {
+    _sharedSecretCache.clear();
     final prefs = await SharedPreferences.getInstance();
     final prefKey = (keyPrefix != null && keyPrefix.isNotEmpty)
         ? '${keyPrefix}_lan_tg_private_key'
@@ -44,6 +46,42 @@ class CryptoService {
 
     _publicKey = await _keyPair!.extractPublicKey();
     _publicKeyBase64 = base64Encode(_publicKey!.bytes);
+  }
+
+  /// Clears the shared secret cache completely, or for a specific peer
+  void clearSharedSecretCache([String? peerPublicKeyBase64]) {
+    if (peerPublicKeyBase64 != null) {
+      _sharedSecretCache.remove(peerPublicKeyBase64);
+    } else {
+      _sharedSecretCache.clear();
+    }
+  }
+
+  /// Rotates local device identity keypair and persists the new seed
+  Future<String> rotateKeyPair({String? keyPrefix}) async {
+    _sharedSecretCache.clear();
+    final prefs = await SharedPreferences.getInstance();
+    final prefKey = (keyPrefix != null && keyPrefix.isNotEmpty)
+        ? '${keyPrefix}_lan_tg_private_key'
+        : 'lan_tg_private_key';
+
+    _keyPair = await _x25519.newKeyPair();
+    final privateKey = await _keyPair!.extractPrivateKeyBytes();
+    await prefs.setString(prefKey, base64Encode(privateKey));
+
+    _publicKey = await _keyPair!.extractPublicKey();
+    _publicKeyBase64 = base64Encode(_publicKey!.bytes);
+    return _publicKeyBase64!;
+  }
+
+  /// Compares two byte buffers in constant time to prevent timing side-channel attacks
+  static bool constantTimeCompare(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    int result = 0;
+    for (int i = 0; i < a.length; i++) {
+      result |= a[i] ^ b[i];
+    }
+    return result == 0;
   }
 
   /// Derives or retrieves cached shared secret key for a peer's public key

@@ -18,6 +18,7 @@ import 'models.dart';
 class AppDatabase {
   static final AppDatabase _instance = AppDatabase._internal();
   factory AppDatabase() => _instance;
+  factory AppDatabase.isolated() => AppDatabase._internal();
   AppDatabase._internal();
 
   sqflite.Database? _db;
@@ -1041,10 +1042,11 @@ class AppDatabase {
     iterations: 100000,
     bits: 256,
   );
+  static final _backupAead = crypto_pkg.Chacha20.poly1305Aead();
 
   Future<Map<String, dynamic>> exportEncryptedBackup(String password) async {
     final backupData = {
-      'version': 2,
+      'version': 3,
       'exported_at': DateTime.now().toIso8601String(),
       'accounts': _accounts.map((a) => a.toJson()).toList(),
       'peers': _knownPeers.values.map((p) => p.toJson()).toList(),
@@ -1057,7 +1059,6 @@ class AppDatabase {
 
     final rawJson = jsonEncode(backupData);
     final rawBytes = utf8.encode(rawJson);
-    final checksum = sha256.convert(rawBytes).toString();
 
     final rand = Random.secure();
     final saltBytes = List<int>.generate(32, (_) => rand.nextInt(256));
@@ -1065,16 +1066,20 @@ class AppDatabase {
       password: password,
       nonce: saltBytes,
     );
-    final keyBytes = await secretKey.extractBytes();
-    final encryptedBytes = _encryptBackupBytes(rawBytes, keyBytes);
+    final secretBox = await _backupAead.encrypt(
+      rawBytes,
+      secretKey: secretKey,
+    );
 
     return {
       'format': 'ozobackup',
-      'version': 2,
+      'version': 3,
       'kdf': 'pbkdf2-hmac-sha256-100k',
+      'cipher': 'chacha20-poly1305',
       'salt': base64Encode(saltBytes),
-      'checksum': checksum,
-      'payload': base64Encode(encryptedBytes),
+      'nonce': base64Encode(secretBox.nonce),
+      'mac': base64Encode(secretBox.mac.bytes),
+      'payload': base64Encode(secretBox.cipherText),
     };
   }
 
@@ -1084,27 +1089,52 @@ class AppDatabase {
       if (container['format'] != 'ozobackup') return false;
       final version = container['version'] as int? ?? 1;
       final saltStr = container['salt'] as String? ?? 'ozo_vault_salt_v1';
-      final expectedChecksum = container['checksum'] as String;
       final payloadBase64 = container['payload'] as String;
 
-      List<int> keyBytes;
-      if (version >= 2) {
+      List<int> decryptedBytes;
+
+      if (version >= 3) {
         final saltBytes = base64Decode(saltStr);
+        final nonceStr = container['nonce'] as String?;
+        final macStr = container['mac'] as String?;
+        if (nonceStr == null || macStr == null) return false;
+
         final secretKey = await _backupPbkdf2.deriveKeyFromPassword(
           password: password,
           nonce: saltBytes,
         );
-        keyBytes = await secretKey.extractBytes();
+        final secretBox = crypto_pkg.SecretBox(
+          base64Decode(payloadBase64),
+          nonce: base64Decode(nonceStr),
+          mac: crypto_pkg.Mac(base64Decode(macStr)),
+        );
+        decryptedBytes = await _backupAead.decrypt(
+          secretBox,
+          secretKey: secretKey,
+        );
       } else {
-        keyBytes = sha256.convert(utf8.encode('$password:$saltStr')).bytes;
-      }
+        final expectedChecksum = container['checksum'] as String?;
+        List<int> keyBytes;
+        if (version == 2) {
+          final saltBytes = base64Decode(saltStr);
+          final secretKey = await _backupPbkdf2.deriveKeyFromPassword(
+            password: password,
+            nonce: saltBytes,
+          );
+          keyBytes = await secretKey.extractBytes();
+        } else {
+          keyBytes = sha256.convert(utf8.encode('$password:$saltStr')).bytes;
+        }
 
-      final encryptedBytes = base64Decode(payloadBase64);
-      final decryptedBytes = _decryptBackupBytes(encryptedBytes, keyBytes);
+        final encryptedBytes = base64Decode(payloadBase64);
+        decryptedBytes = _decryptBackupBytes(encryptedBytes, keyBytes);
 
-      final actualChecksum = sha256.convert(decryptedBytes).toString();
-      if (actualChecksum != expectedChecksum) {
-        return false;
+        if (expectedChecksum != null) {
+          final actualChecksum = sha256.convert(decryptedBytes).toString();
+          if (actualChecksum != expectedChecksum) {
+            return false;
+          }
+        }
       }
 
       final jsonStr = utf8.decode(decryptedBytes);

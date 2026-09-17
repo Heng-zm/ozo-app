@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
+import 'package:qr/qr.dart';
 import '../constants.dart';
 import '../crypto/crypto_service.dart';
 import '../database/models.dart';
@@ -14,7 +15,7 @@ typedef TypingCallback = void Function(String peerId, bool isTyping);
 typedef GroupInviteCallback = void Function(GroupChat group);
 typedef GroupRelayCallback = void Function(ChatMessage message, String groupId);
 typedef ReactionCallback = void Function(String messageId, String emoji, String senderId);
-typedef DeleteMessageCallback = void Function(String messageId);
+typedef DeleteMessageCallback = void Function(String messageId, [String? senderId]);
 typedef CallSignalingCallback = void Function(CallSignaling signaling);
 
 /// Embedded HTTP and WebSocket server running locally on each peer
@@ -121,6 +122,7 @@ class P2pServer {
     if (path == '/ws') {
       if (WebSocketTransformer.isUpgradeRequest(request)) {
         final socket = await WebSocketTransformer.upgrade(request);
+        socket.pingInterval = const Duration(seconds: 15);
         _handleWebSocket(socket, request.connectionInfo?.remoteAddress.address ?? '');
       } else {
         request.response.statusCode = HttpStatus.badRequest;
@@ -418,7 +420,8 @@ class P2pServer {
               break;
             case 'DELETE_MSG':
               final messageId = msg['messageId'] as String;
-              onMessageDeleted?.call(messageId);
+              final reqSenderId = msg['senderId'] as String? ?? peerId;
+              onMessageDeleted?.call(messageId, reqSenderId);
               break;
             case 'CALL_OFFER':
             case 'CALL_ANSWER':
@@ -495,7 +498,8 @@ class P2pServer {
         senderPublicKeyBase64: senderPubKey,
       );
     } catch (e) {
-      plaintext = '[Decryption failed: unauthenticated message]';
+      if (kDebugMode) print('E2EE Decryption failed from $senderId: $e');
+      return; // Reject and drop unauthenticated/tampered message
     }
 
     final msgTypeStr = msg['msgType'] as String?;
@@ -651,13 +655,29 @@ class P2pServer {
     _actualPort = 0;
   }
 
-  String _escapeHtml(String text) {
-    return text
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#39;');
+  String _generateQrSvg(String data) {
+    try {
+      final qrCode = QrCode.fromData(
+        data: data,
+        errorCorrectLevel: QrErrorCorrectLevel.M,
+      );
+      final qrImage = QrImage(qrCode);
+      final count = qrImage.moduleCount;
+      final buf = StringBuffer();
+      buf.write('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 $count $count" width="180" height="180" shape-rendering="crispEdges">');
+      buf.write('<rect width="100%" height="100%" fill="#ffffff" rx="14"/>');
+      for (var r = 0; r < count; r++) {
+        for (var c = 0; c < count; c++) {
+          if (qrImage.isDark(r, c)) {
+            buf.write('<rect x="$c" y="$r" width="1" height="1" fill="#000000"/>');
+          }
+        }
+      }
+      buf.write('</svg>');
+      return buf.toString();
+    } catch (_) {
+      return '<div style="padding:20px;color:#888;font-size:12px;">QR Code generated for OZO link</div>';
+    }
   }
 
   String _buildWebConnectHtml(HttpRequest request) {
@@ -920,7 +940,7 @@ class P2pServer {
       </div>
 
       <div class="qr-wrap">
-        <img class="qr-img" width="180" height="180" src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${Uri.encodeComponent(deepLink)}" alt="Connection QR Code" />
+        <div class="qr-img">${_generateQrSvg(deepLink)}</div>
       </div>
 
       <a href="$deepLink" class="btn btn-primary">📱 Open in OZO App</a>

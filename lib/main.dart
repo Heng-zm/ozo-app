@@ -58,9 +58,17 @@ Future<int> _detectLocalInstance() async {
     final resp = await req.close().timeout(const Duration(milliseconds: 300));
     if (resp.statusCode == HttpStatus.ok) {
       final text = await utf8.decodeStream(resp);
-      if (text.contains('ozo-p2p')) {
-        client.close(force: true);
-        return 2;
+      try {
+        final json = jsonDecode(text) as Map<String, dynamic>;
+        if (json['app'] == 'OZO' || json['status'] == 'healthy') {
+          client.close(force: true);
+          return 2;
+        }
+      } catch (_) {
+        if (text.contains('OZO') || text.contains('healthy')) {
+          client.close(force: true);
+          return 2;
+        }
       }
     }
     client.close(force: true);

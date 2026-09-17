@@ -128,22 +128,26 @@ jobs:
         run: |
           cd build/macos/Build/Products/Release
           zip -r ../../../../ozo-app-macos.zip *.app
-      - name: Build iOS (No Codesign)
-        run: flutter build ios --release --no-codesign
-      - name: Package iOS App
+      - name: Build iOS App (.ipa)
         run: |
-          cd build/ios/iphoneos
-          zip -r ../../../ozo-app-ios-unsigned.zip Runner.app
+          flutter build ios --release --no-codesign
+          mkdir -p Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -qr ozo-app-ios.ipa Payload
+          rm -rf Payload
+          shasum -a 256 ozo-app-ios.ipa > ozo-app-ios.ipa.sha256
       - name: Upload macOS App
         uses: actions/upload-artifact@v4
         with:
           name: macos-release
           path: ozo-app-macos.zip
-      - name: Upload iOS App
+      - name: Upload iOS IPA
         uses: actions/upload-artifact@v4
         with:
-          name: ios-release
-          path: ozo-app-ios-unsigned.zip
+          name: ios-ipa
+          path: |
+            ozo-app-ios.ipa
+            ozo-app-ios.ipa.sha256
 
   # 6. Publish to GitHub Releases
   publish-release:

@@ -11,6 +11,7 @@ import '../database/models.dart';
 class SecurityService extends ChangeNotifier {
   static final SecurityService _instance = SecurityService._internal();
   factory SecurityService() => _instance;
+  factory SecurityService.isolated() => SecurityService._internal();
   SecurityService._internal();
 
   static final _pbkdf2 = Pbkdf2(
@@ -67,7 +68,7 @@ class SecurityService extends ChangeNotifier {
     // Detect legacy SHA-256 (64 hex characters) and auto-upgrade to PBKDF2
     if (_settings.pinHash.length == 64) {
       final legacyHash = crypto.sha256.convert(utf8.encode('$pin:${_settings.pinSalt}:ozo_lock_salt')).toString();
-      if (legacyHash == _settings.pinHash) {
+      if (_constantTimeEquals(legacyHash, _settings.pinHash)) {
         await setPin(pin);
         return true;
       }
@@ -75,7 +76,16 @@ class SecurityService extends ChangeNotifier {
     }
 
     final hash = await computeHash(pin, _settings.pinSalt);
-    return hash == _settings.pinHash;
+    return _constantTimeEquals(hash, _settings.pinHash);
+  }
+
+  static bool _constantTimeEquals(String a, String b) {
+    if (a.length != b.length) return false;
+    var result = 0;
+    for (var i = 0; i < a.length; i++) {
+      result |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
+    }
+    return result == 0;
   }
 
   /// Attempts to unlock the application with the given PIN

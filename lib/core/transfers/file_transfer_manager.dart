@@ -195,16 +195,18 @@ class FileTransferManager extends ChangeNotifier {
 
       final response = await request.close();
 
-      if (response.statusCode != HttpStatus.ok &&
-          response.statusCode != HttpStatus.partialContent) {
+      if (response.statusCode == HttpStatus.ok) {
+        // Server returned full file from start: reset progress and write fresh
+        sink = destFile.openWrite(mode: FileMode.write);
+        info.bytesTransferred = 0;
+      } else if (response.statusCode == HttpStatus.partialContent) {
+        // Server honored Range request: append to existing bytes
+        sink = destFile.openWrite(mode: FileMode.append);
+      } else {
         info.status = TransferStatus.failed;
         notifyListeners();
         return;
       }
-
-      sink = destFile.openWrite(
-        mode: info.bytesTransferred > 0 ? FileMode.append : FileMode.write,
-      );
 
       DateTime lastTime = DateTime.now();
       int bytesSinceLastTime = 0;
@@ -218,11 +220,23 @@ class FileTransferManager extends ChangeNotifier {
         info.bytesTransferred += chunk.length;
         bytesSinceLastTime += chunk.length;
 
-        // Calculate speed every 500ms
+        // Calculate speed every 500ms using Exponential Moving Average (EMA)
         final now = DateTime.now();
         final elapsed = now.difference(lastTime).inMilliseconds;
         if (elapsed >= 500) {
-          info.speedBytesPerSec = (bytesSinceLastTime / (elapsed / 1000.0));
+          final rawSpeed = (bytesSinceLastTime / (elapsed / 1000.0));
+          const double alpha = 0.35; // Smoothing factor
+          info.speedBytesPerSec = info.speedBytesPerSec == 0.0
+              ? rawSpeed
+              : (alpha * rawSpeed + (1.0 - alpha) * info.speedBytesPerSec);
+
+          if (info.speedBytesPerSec > 256) {
+            final remainingBytes = (info.fileSize - info.bytesTransferred).clamp(0, info.fileSize);
+            info.estimatedRemainingSeconds = (remainingBytes / info.speedBytesPerSec).round();
+          } else {
+            info.estimatedRemainingSeconds = null;
+          }
+
           lastTime = now;
           bytesSinceLastTime = 0;
           notifyListeners();
@@ -245,6 +259,9 @@ class FileTransferManager extends ChangeNotifier {
           info.status = TransferStatus.failed;
         } else {
           info.status = TransferStatus.completed;
+          info.speedBytesPerSec = 0.0;
+          info.estimatedRemainingSeconds = 0;
+          info.retryCount = 0;
           await database.markFileCompleted(info.transferId, info.localPath);
         }
       } else {
@@ -252,8 +269,30 @@ class FileTransferManager extends ChangeNotifier {
       }
     } catch (e) {
       if (kDebugMode) print('Download error: $e');
-      if (info.status != TransferStatus.paused) {
-        info.status = TransferStatus.failed;
+      if (info.status != TransferStatus.paused && info.status != TransferStatus.completed) {
+        // Auto-retry with backoff up to 3 times
+        if (info.retryCount < 3) {
+          info.retryCount++;
+          final backoffSec = 1 << (info.retryCount - 1); // 1s, 2s, 4s
+          if (kDebugMode) {
+            print('[FileTransfer] Transfer ${info.transferId} failed, retrying in ${backoffSec}s (attempt ${info.retryCount}/3)...');
+          }
+          await sink?.close();
+          sink = null;
+          httpClient.close(force: true);
+          _activeClients.remove(info.transferId);
+
+          info.status = TransferStatus.transferring;
+          notifyListeners();
+
+          await Future.delayed(Duration(seconds: backoffSec));
+          if (info.status == TransferStatus.transferring) {
+            _startDownloadStream(info);
+            return;
+          }
+        } else {
+          info.status = TransferStatus.failed;
+        }
       }
     } finally {
       await sink?.close();
@@ -282,13 +321,42 @@ class FileTransferManager extends ChangeNotifier {
     }
   }
 
-  void cancelTransfer(String transferId) {
+  void retryTransfer(String transferId) {
+    final info = _transfers[transferId];
+    if (info != null && info.status == TransferStatus.failed) {
+      info.retryCount = 0;
+      info.status = TransferStatus.transferring;
+      notifyListeners();
+      _startDownloadStream(info);
+    }
+  }
+
+  Future<void> deletePartialFile(String transferId) async {
+    final info = _transfers[transferId];
+    if (info != null && info.status != TransferStatus.completed) {
+      final file = File(info.localPath);
+      if (await file.exists()) {
+        try {
+          await file.delete();
+          info.bytesTransferred = 0;
+          notifyListeners();
+        } catch (e) {
+          if (kDebugMode) print('Error deleting partial file: $e');
+        }
+      }
+    }
+  }
+
+  void cancelTransfer(String transferId, {bool deletePartial = false}) async {
     final info = _transfers[transferId];
     if (info != null) {
       info.status = TransferStatus.failed;
       _activeClients[transferId]?.close(force: true);
       _activeClients.remove(transferId);
       server.unregisterSharedFile(transferId);
+      if (deletePartial) {
+        await deletePartialFile(transferId);
+      }
       notifyListeners();
     }
   }

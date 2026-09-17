@@ -172,6 +172,171 @@ class StickerCatalog {
         ),
       ],
     ),
+    StickerPack(
+      id: 'crypto_devs',
+      name: 'Crypto Devs',
+      icon: '💻',
+      stickers: [
+        StickerData(
+          id: 'dev_terminal',
+          packId: 'crypto_devs',
+          name: 'Terminal Mode',
+          emoji: '💻⚡',
+        ),
+        StickerData(
+          id: 'dev_coffee',
+          packId: 'crypto_devs',
+          name: 'Coffee Fueled',
+          emoji: '☕⌨️',
+        ),
+        StickerData(
+          id: 'dev_git',
+          packId: 'crypto_devs',
+          name: 'Git Push Master',
+          emoji: '🐙🚀',
+        ),
+        StickerData(
+          id: 'dev_bug',
+          packId: 'crypto_devs',
+          name: 'Squashing Bugs',
+          emoji: '🐛🔨',
+        ),
+        StickerData(
+          id: 'dev_lock',
+          packId: 'crypto_devs',
+          name: 'Zero Trust',
+          emoji: '🔒🛡️',
+        ),
+        StickerData(
+          id: 'dev_success',
+          packId: 'crypto_devs',
+          name: 'Build Green',
+          emoji: '✨🟢',
+        ),
+        StickerData(
+          id: 'dev_fire',
+          packId: 'crypto_devs',
+          name: 'Prod on Fire',
+          emoji: '🚨🔥',
+        ),
+        StickerData(
+          id: 'dev_chill',
+          packId: 'crypto_devs',
+          name: 'Works on My Machine',
+          emoji: '🏖️💻',
+        ),
+      ],
+    ),
+    StickerPack(
+      id: 'party_vibes',
+      name: 'Party Vibes',
+      icon: '🎉',
+      stickers: [
+        StickerData(
+          id: 'party_disco',
+          packId: 'party_vibes',
+          name: 'Disco Time',
+          emoji: '🪩✨',
+        ),
+        StickerData(
+          id: 'party_popper',
+          packId: 'party_vibes',
+          name: 'Confetti Burst',
+          emoji: '🎉🎊',
+        ),
+        StickerData(
+          id: 'party_cocktail',
+          packId: 'party_vibes',
+          name: 'Cheers',
+          emoji: '🥂🍸',
+        ),
+        StickerData(
+          id: 'party_music',
+          packId: 'party_vibes',
+          name: 'Feel the Bass',
+          emoji: '🎧🎶',
+        ),
+        StickerData(
+          id: 'party_dance',
+          packId: 'party_vibes',
+          name: 'Dance Floor',
+          emoji: '💃🕺',
+        ),
+        StickerData(
+          id: 'party_balloon',
+          packId: 'party_vibes',
+          name: 'Celebration',
+          emoji: '🎈🥳',
+        ),
+        StickerData(
+          id: 'party_crown',
+          packId: 'party_vibes',
+          name: 'VIP Status',
+          emoji: '👑✨',
+        ),
+        StickerData(
+          id: 'party_spark',
+          packId: 'party_vibes',
+          name: 'Sparklers',
+          emoji: '🎇🎆',
+        ),
+      ],
+    ),
+    StickerPack(
+      id: 'animals_wild',
+      name: 'Wild Animals',
+      icon: '🦊',
+      stickers: [
+        StickerData(
+          id: 'animal_fox',
+          packId: 'animals_wild',
+          name: 'Clever Fox',
+          emoji: '🦊',
+        ),
+        StickerData(
+          id: 'animal_wolf',
+          packId: 'animals_wild',
+          name: 'Lone Wolf',
+          emoji: '🐺🌕',
+        ),
+        StickerData(
+          id: 'animal_lion',
+          packId: 'animals_wild',
+          name: 'King Lion',
+          emoji: '🦁👑',
+        ),
+        StickerData(
+          id: 'animal_panda',
+          packId: 'animals_wild',
+          name: 'Chilled Panda',
+          emoji: '🐼🎋',
+        ),
+        StickerData(
+          id: 'animal_owl',
+          packId: 'animals_wild',
+          name: 'Night Owl',
+          emoji: '🦉⭐',
+        ),
+        StickerData(
+          id: 'animal_koala',
+          packId: 'animals_wild',
+          name: 'Cozy Koala',
+          emoji: '🐨🌿',
+        ),
+        StickerData(
+          id: 'animal_tiger',
+          packId: 'animals_wild',
+          name: 'Stealth Tiger',
+          emoji: '🐯🐾',
+        ),
+        StickerData(
+          id: 'animal_unicorn',
+          packId: 'animals_wild',
+          name: 'Magic Unicorn',
+          emoji: '🦄🌈',
+        ),
+      ],
+    ),
   ];
 
   /// Looks up a sticker by ID across all packs, supporting legacy pack prefixes if applicable.
@@ -182,5 +347,20 @@ class StickerCatalog {
       }
     }
     return null;
+  }
+
+  /// Searches stickers across all packs by name or emoji
+  static List<StickerData> searchStickers(String query) {
+    if (query.trim().isEmpty) return [];
+    final q = query.trim().toLowerCase();
+    final results = <StickerData>[];
+    for (final pack in packs) {
+      for (final s in pack.stickers) {
+        if (s.name.toLowerCase().contains(q) || s.emoji.contains(q) || s.id.toLowerCase().contains(q)) {
+          results.add(s);
+        }
+      }
+    }
+    return results;
   }
 }

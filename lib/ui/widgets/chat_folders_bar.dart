@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../core/database/models.dart';
 import '../../providers/chat_provider.dart';
@@ -71,7 +72,10 @@ class ChatFoldersBar extends StatelessWidget {
           final isSelected = provider.activeFolder == item.folder;
 
           return GestureDetector(
-            onTap: () => provider.setFolder(item.folder),
+            onTap: () {
+              HapticFeedback.selectionClick();
+              provider.setFolder(item.folder);
+            },
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),

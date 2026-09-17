@@ -1,0 +1,232 @@
+name: iOS-ipa-build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-ios:
+    name: 🎉 iOS Release Build
+    runs-on: macos-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🛠️ Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.4'
+          channel: 'stable'
+          cache: true
+
+      - name: 📦 Install pub dependencies
+        run: flutter pub get
+
+      - name: 🔧 Generate Xcode config (config-only, no build)
+        run: |
+          flutter build ios --release --config-only --no-codesign \
+            --build-number=${{ github.run_number }} \
+            --build-name=1.1.${{ github.run_number }}
+
+      - name: 🦕 Pod install
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: 🔓 Patch Xcode signing (unsigned / sideload build)
+        run: |
+          PBX="ios/Runner.xcodeproj/project.pbxproj"
+
+          sed -i '' 's/DEVELOPMENT_TEAM = [^;]*;//g'                               "$PBX"
+          sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = [^;]*;//g'                 "$PBX"
+          sed -i '' 's/PROVISIONING_PROFILE = [^;]*;//g'                           "$PBX"
+          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g'   "$PBX"
+          sed -i '' 's/CODE_SIGNING_REQUIRED = YES;/CODE_SIGNING_REQUIRED = NO;/g' "$PBX"
+          sed -i '' 's/CODE_SIGN_IDENTITY = [^;]*;//g'                             "$PBX"
+          sed -i '' '/CODE_SIGNING_ALLOWED = YES;/d'                               "$PBX"
+
+          {
+            echo ""
+            echo "// Unsigned sideload overrides"
+            echo "CODE_SIGNING_ALLOWED=NO"
+            echo "CODE_SIGNING_REQUIRED=NO"
+            echo "CODE_SIGNING_IDENTITY="
+            echo "DEVELOPMENT_TEAM="
+            echo "PROVISIONING_PROFILE_SPECIFIER="
+          } >> ios/Flutter/Generated.xcconfig
+
+          for f in ios/Flutter/Release.xcconfig ios/Flutter/Debug.xcconfig; do
+            [ -f "$f" ] && {
+              echo "CODE_SIGNING_ALLOWED=NO"  >> "$f"
+              echo "CODE_SIGNING_REQUIRED=NO" >> "$f"
+            }
+          done
+
+          echo "✅ Signing patches applied."
+
+      - name: 🏗️ Build iOS app (unsigned, xcodebuild)
+        run: |
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            MARKETING_VERSION=1.1.${{ github.run_number }} \
+            build
+
+      - name: 📦 Package IPA for sideloading
+        run: |
+          APP_PATH=$(find build/DerivedData \
+            -name "Runner.app" \
+            -path "*/Release-iphoneos/*" \
+            | head -1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Runner.app not found. Listing DerivedData:"
+            find build/DerivedData -name "*.app" || true
+            exit 1
+          fi
+
+          echo "✅ Found: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/Runner.app
+          zip -qq -r -9 ozo-app-ios.ipa Payload
+          echo "✅ IPA size: $(du -sh ozo-app-ios.ipa | cut -f1)"
+
+      # ---------------------------------------------------------------
+      # OTA: Generate manifest.plist + install page hosted on gh-pages
+      # iOS Safari reads itms-services://?action=download-manifest&url=
+      # and triggers a native install prompt — no PC required.
+      # ---------------------------------------------------------------
+      - name: 🌐 Generate OTA manifest + install page
+        run: |
+          REPO="${{ github.repository }}"
+          RUN="${{ github.run_number }}"
+          VERSION="1.1.${RUN}"
+          OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+
+          # The IPA will be uploaded as a release asset — build its direct URL
+          IPA_URL="https://github.com/${REPO}/releases/download/v${VERSION}/OZO-v${VERSION}.ipa"
+
+          # GitHub Pages URL for this repo
+          PAGES_URL="https://${OWNER}.github.io/${REPO_NAME}"
+          MANIFEST_URL="${PAGES_URL}/manifest.plist"
+
+          mkdir -p ota
+
+          # manifest.plist — iOS reads this to know what to install
+          cat > ota/manifest.plist << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>items</key>
+            <array>
+              <dict>
+                <key>assets</key>
+                <array>
+                  <dict>
+                    <key>kind</key>       <string>software-package</string>
+                    <key>url</key>        <string>${IPA_URL}</string>
+                  </dict>
+                </array>
+                <key>metadata</key>
+                <dict>
+                  <key>bundle-identifier</key> <string>com.antigravity.lan.lanTelegram</string>
+                  <key>bundle-version</key>     <string>${VERSION}</string>
+                  <key>kind</key>               <string>software</string>
+                  <key>title</key>              <string>OZO Messenger</string>
+                </dict>
+              </dict>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+
+          # index.html — tap the button on iPhone Safari to install
+          cat > ota/index.html << HTML
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8"/>
+            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+            <title>OZO Messenger — Install</title>
+            <style>
+              body{font-family:-apple-system,sans-serif;background:#0d1117;color:#fff;
+                   display:flex;flex-direction:column;align-items:center;
+                   justify-content:center;min-height:100vh;margin:0;padding:24px;box-sizing:border-box;}
+              h1{font-size:1.8rem;margin-bottom:4px;font-weight:700;}
+              p{color:#8b949e;margin-bottom:32px;font-size:.95rem;}
+              a.btn{display:inline-block;background:#238636;color:#fff;
+                    padding:16px 40px;border-radius:14px;font-size:1.1rem;
+                    font-weight:600;text-decoration:none;letter-spacing:.3px;
+                    box-shadow:0 4px 14px rgba(35,134,54,0.4);}
+              .note{margin-top:24px;color:#8b949e;font-size:.8rem;text-align:center;line-height:1.5;}
+            </style>
+          </head>
+          <body>
+            <h1>⚡ OZO Messenger</h1>
+            <p>v${VERSION} · P2P Encrypted Messenger & High-Speed LAN Transfer</p>
+            <a class="btn"
+               href="itms-services://?action=download-manifest&url=${MANIFEST_URL}">
+              ⬇️ Install on iPhone
+            </a>
+            <p class="note">
+              Open this page in <strong>Safari</strong> on your iPhone.<br/>
+              Chrome and Firefox cannot trigger OTA installs.<br/><br/>
+              ⚠️ Device must be registered in Apple Developer portal<br/>
+              or use AltStore / Sideloadly / TrollStore for truly unsigned install.
+            </p>
+          </body>
+          </html>
+          HTML
+
+          echo "✅ OTA files generated."
+          echo "MANIFEST_URL=${MANIFEST_URL}" >> $GITHUB_ENV
+          echo "PAGES_URL=${PAGES_URL}" >> $GITHUB_ENV
+
+      - name: 🚀 Upload IPA to GitHub Releases
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ozo-app-ios.ipa
+          asset_name: OZO-v1.1.${{ github.run_number }}.ipa
+          tag: v1.1.${{ github.run_number }}
+          overwrite: true
+          body: |
+            ## ⚡ OZO Messenger — v1.1.${{ github.run_number }}
+
+            | Field | Value |
+            |---|---|
+            | Platform | iOS (unsigned OTA / Sideload) |
+            | Bundle ID | com.antigravity.lan.lanTelegram |
+            | Build | ${{ github.run_number }} |
+
+            ### 📲 Direct Install (no PC needed)
+            Open this link **in Safari on your iPhone**:
+
+            👉 ${{ env.PAGES_URL }}
+
+            > ⚠️ Unsigned build — device UDID must be registered, or use Sideloadly/AltStore/TrollStore.
+
+      # Deploy the OTA page to GitHub Pages so the install link is always live
+      - name: 📤 Deploy OTA page to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./ota
+          force_orphan: true

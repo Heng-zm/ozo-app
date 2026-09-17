@@ -25,7 +25,9 @@ class PrefixTrie<T> {
       current.isTerminal = true;
       _wordCount++;
     }
-    current.values.add(value);
+    if (!current.values.contains(value)) {
+      current.values.add(value);
+    }
   }
 
   /// Searches for all items whose indexed keys start with [prefix].

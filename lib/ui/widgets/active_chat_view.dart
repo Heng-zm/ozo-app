@@ -1,6 +1,9 @@
 import 'dart:io';
+import 'dart:ui';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/database/models.dart';
@@ -37,6 +40,8 @@ class _ActiveChatViewState extends State<ActiveChatView> {
   int _searchMatchIndex = 0;
   List<int> _matchedIndices = [];
   int _pinnedMessageIndex = 0;
+  int _previousMessageCount = 0;
+  String? _previousChatId;
 
   @override
   void dispose() {
@@ -62,6 +67,7 @@ class _ActiveChatViewState extends State<ActiveChatView> {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
 
+    HapticFeedback.lightImpact();
     _textController.clear();
     setState(() {
       _isComposing = false;
@@ -87,15 +93,42 @@ class _ActiveChatViewState extends State<ActiveChatView> {
     final chatId = isGroup ? group!.id : peer!.id;
     final pinnedMsgs = provider.getPinnedMessages(chatId);
 
-    _scrollToBottom();
+    if (_previousChatId != chatId) {
+      _previousChatId = chatId;
+      _previousMessageCount = messages.length;
+      _scrollToBottom();
+    } else if (messages.length > _previousMessageCount) {
+      final wasNearBottom = !_scrollController.hasClients ||
+          (_scrollController.position.maxScrollExtent - _scrollController.offset) < 150;
+      _previousMessageCount = messages.length;
+      if (wasNearBottom) {
+        _scrollToBottom();
+      }
+    } else {
+      _previousMessageCount = messages.length;
+    }
 
     return Scaffold(
       backgroundColor: isDark ? TelegramTheme.darkChatBg : TelegramTheme.lightChatBg,
       appBar: AppBar(
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        backgroundColor: isDark
+            ? const Color(0xCC17212B)
+            : const Color(0xCCE6EEF5),
+        flexibleSpace: ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(color: Colors.transparent),
+          ),
+        ),
         leading: widget.onBack != null
             ? IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: widget.onBack,
+                icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  widget.onBack!();
+                },
               )
             : null,
         titleSpacing: widget.onBack != null ? 0 : 16,
@@ -302,16 +335,28 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                           itemBuilder: (context, index) {
                             final msg = messages[index];
                             final isOutgoing = msg.senderId == provider.deviceId;
-                            return ChatBubble(
-                              message: msg,
-                              isOutgoing: isOutgoing,
+                            final showDateBadge = index == 0 ||
+                                !_isSameDay(msg.timestamp, messages[index - 1].timestamp);
+
+                            return Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (showDateBadge)
+                                  _buildDateBadge(msg.timestamp, isDark),
+                                ChatBubble(
+                                  message: msg,
+                                  isOutgoing: isOutgoing,
+                                  onQuotedMessageTap: (quotedId) =>
+                                      _jumpToMessage(quotedId, messages),
+                                ),
+                              ],
                             );
                           },
                         ),
                 ),
                 // Reply preview banner
                 if (provider.replyingToMessage != null)
-                  _buildReplyBanner(context, provider, isDark),
+                  _buildReplyBanner(context, provider, isDark, messages),
                 // Input bar
                 _buildInputBar(context, provider, isDark, isGroup, isOnline),
               ],
@@ -351,56 +396,63 @@ class _ActiveChatViewState extends State<ActiveChatView> {
     );
   }
 
-  Widget _buildReplyBanner(BuildContext context, ChatProvider provider, bool isDark) {
+  Widget _buildReplyBanner(
+      BuildContext context, ChatProvider provider, bool isDark, List<ChatMessage> messages) {
     final msg = provider.replyingToMessage!;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       color: isDark ? TelegramTheme.darkSidebar : Colors.white,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(8),
-          border: const Border(
-            left: BorderSide(color: TelegramTheme.primaryBlue, width: 3),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => _jumpToMessage(msg.id, messages),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.04),
+            borderRadius: BorderRadius.circular(10),
+            border: const Border(
+              left: BorderSide(color: TelegramTheme.primaryBlue, width: 3.5),
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.reply_rounded, color: TelegramTheme.primaryBlue, size: 18),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    msg.senderName,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: TelegramTheme.primaryBlue,
+          child: Row(
+            children: [
+              const Icon(Icons.reply_rounded, color: TelegramTheme.primaryBlue, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      msg.senderName,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: TelegramTheme.primaryBlue,
+                      ),
                     ),
-                  ),
-                  Text(
-                    msg.content.isNotEmpty ? msg.content : (msg.isImage ? 'Photo' : 'Voice/File'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+                    Text(
+                      msg.content.isNotEmpty
+                          ? msg.content
+                          : (msg.isImage ? '📷 Photo' : (msg.isVoice ? '🎤 Voice Note' : '📁 File')),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.close_rounded, size: 18),
-              onPressed: () => provider.cancelReplying(),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(),
-            ),
-          ],
+              IconButton(
+                icon: const Icon(Icons.close_rounded, size: 18),
+                onPressed: () => provider.cancelReplying(),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -420,151 +472,274 @@ class _ActiveChatViewState extends State<ActiveChatView> {
       final seconds = provider.recordedDuration.inSeconds % 60;
       final timeStr = '$minutes:${seconds.toString().padLeft(2, '0')}';
 
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        color: isDark ? TelegramTheme.darkSidebar : Colors.white,
-        child: SafeArea(
-          child: Row(
-            children: [
-              // Red recording pulse
-              Container(
-                width: 12,
-                height: 12,
-                decoration: const BoxDecoration(
-                  color: Colors.red,
-                  shape: BoxShape.circle,
+      return ClipRect(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: isDark
+                  ? const Color(0xCC17212B)
+                  : Colors.white.withValues(alpha: 0.88),
+              border: Border(
+                top: BorderSide(
+                  color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05),
+                  width: 0.5,
                 ),
               ),
-              const SizedBox(width: 10),
-              Text(
-                timeStr,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                  color: Colors.red,
-                ),
-              ),
-              const SizedBox(width: 12),
-              // Live amplitude visualization dots
-              Expanded(
-                child: SizedBox(
-                  height: 20,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: provider.liveAmplitudes.take(18).map((amp) {
-                      return Container(
-                        width: 3,
-                        height: (amp * 20).clamp(4.0, 20.0),
-                        decoration: BoxDecoration(
-                          color: TelegramTheme.primaryBlue.withAlpha(180),
-                          borderRadius: BorderRadius.circular(2),
+            ),
+            child: SafeArea(
+              top: false,
+              bottom: true,
+              child: Row(
+                children: [
+                  // Red recording indicator with pulsing effect
+                  Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.redAccent.withValues(alpha: 0.5),
+                          blurRadius: 6,
+                          spreadRadius: 1,
                         ),
-                      );
-                    }).toList(),
+                      ],
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 10),
+                  Text(
+                    timeStr,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      color: Colors.redAccent,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // Live amplitude visualization dots
+                  Expanded(
+                    child: SizedBox(
+                      height: 20,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: provider.liveAmplitudes.take(18).map((amp) {
+                          return Container(
+                            width: 3,
+                            height: (amp * 20).clamp(4.0, 20.0),
+                            decoration: BoxDecoration(
+                              color: TelegramTheme.primaryBlue.withAlpha(180),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                  // Cancel button
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline_rounded, color: Colors.grey),
+                    tooltip: 'Cancel recording',
+                    onPressed: () {
+                      HapticFeedback.selectionClick();
+                      provider.cancelVoiceRecording();
+                    },
+                  ),
+                  const SizedBox(width: 4),
+                  // Stop & Send button
+                  Container(
+                    decoration: const BoxDecoration(
+                      color: TelegramTheme.primaryBlue,
+                      shape: BoxShape.circle,
+                    ),
+                    child: IconButton(
+                      icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                      tooltip: 'Send Voice Note',
+                      onPressed: () {
+                        HapticFeedback.lightImpact();
+                        provider.stopAndSendVoiceRecording();
+                      },
+                    ),
+                  ),
+                ],
               ),
-              // Cancel button
-              IconButton(
-                icon: const Icon(Icons.delete_outline_rounded, color: Colors.grey),
-                tooltip: 'Cancel recording',
-                onPressed: () => provider.cancelVoiceRecording(),
-              ),
-              const SizedBox(width: 4),
-              // Stop & Send button
-              Container(
-                decoration: const BoxDecoration(
-                  color: TelegramTheme.primaryBlue,
-                  shape: BoxShape.circle,
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                  tooltip: 'Send Voice Note',
-                  onPressed: () => provider.stopAndSendVoiceRecording(),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       );
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      color: isDark ? TelegramTheme.darkSidebar : Colors.white,
-      child: SafeArea(
-        child: Row(
-          children: [
-            if (!isGroup)
-              IconButton(
-                icon: const Icon(Icons.attach_file_rounded),
-                color: Colors.grey.shade600,
-                tooltip: 'Send File / Media',
-                onPressed: () => provider.pickAndSendFile(),
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          decoration: BoxDecoration(
+            color: isDark
+                ? const Color(0xCC17212B)
+                : Colors.white.withValues(alpha: 0.88),
+            border: Border(
+              top: BorderSide(
+                color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05),
+                width: 0.5,
               ),
-            IconButton(
-              icon: const Icon(Icons.sticky_note_2_outlined),
-              color: Colors.grey.shade600,
-              tooltip: 'Stickers',
-              onPressed: isReadOnly ? null : () => _openStickerPicker(context, provider),
             ),
-            Expanded(
-              child: TextField(
-                controller: _textController,
-                enabled: !isReadOnly,
-                minLines: 1,
-                maxLines: 4,
-                decoration: InputDecoration(
-                  hintText: isReadOnly
-                      ? 'Group is read-only (host offline)...'
-                      : 'Write a message...',
-                  hintStyle: TextStyle(color: Colors.grey.shade500),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(24),
-                    borderSide: BorderSide.none,
+          ),
+          child: SafeArea(
+            top: false,
+            bottom: true,
+            child: Row(
+              children: [
+                if (!isGroup)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.all(6),
+                    icon: const Icon(Icons.attach_file_rounded),
+                    color: Colors.grey.shade600,
+                    tooltip: 'Send File / Media',
+                    onPressed: () {
+                      HapticFeedback.selectionClick();
+                      provider.pickAndSendFile();
+                    },
                   ),
-                  filled: true,
-                  fillColor: isDark
-                      ? TelegramTheme.darkBackground
-                      : Colors.grey.shade100,
+                if (!isGroup)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.all(6),
+                    icon: const Icon(Icons.camera_alt_rounded),
+                    color: Colors.grey.shade600,
+                    tooltip: 'Take / Pick Photo',
+                    onPressed: isReadOnly
+                        ? null
+                        : () {
+                            HapticFeedback.selectionClick();
+                            provider.takeAndSendPhoto();
+                          },
+                  ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(6),
+                  icon: const Icon(Icons.location_on_rounded),
+                  color: Colors.grey.shade600,
+                  tooltip: 'Share Location',
+                  onPressed: isReadOnly
+                      ? null
+                      : () {
+                          HapticFeedback.selectionClick();
+                          _openLocationDialog(context, provider);
+                        },
                 ),
-                onChanged: (text) {
-                  final hasText = text.trim().isNotEmpty;
-                  if (hasText != _isComposing) {
-                    setState(() {
-                      _isComposing = hasText;
-                    });
-                  }
-                  if (!isGroup) {
-                    provider.sendTypingIndicator(hasText);
-                  }
-                },
-                onSubmitted: isReadOnly ? null : (_) => _handleSubmitted(provider),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              decoration: BoxDecoration(
-                color: isReadOnly ? Colors.grey : TelegramTheme.primaryBlue,
-                shape: BoxShape.circle,
-              ),
-              child: _isComposing || isGroup
-                  ? IconButton(
-                      icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-                      onPressed: _isComposing && !isReadOnly
-                          ? () => _handleSubmitted(provider)
-                          : null,
-                    )
-                  : IconButton(
-                      icon: const Icon(Icons.mic_rounded, color: Colors.white, size: 20),
-                      tooltip: 'Record Voice Note',
-                      onPressed: !isReadOnly
-                          ? () => provider.startVoiceRecording()
-                          : null,
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(6),
+                  icon: const Icon(Icons.sticky_note_2_outlined),
+                  color: Colors.grey.shade600,
+                  tooltip: 'Stickers',
+                  onPressed: isReadOnly
+                      ? null
+                      : () {
+                          HapticFeedback.selectionClick();
+                          _openStickerPicker(context, provider);
+                        },
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: _textController,
+                    enabled: !isReadOnly,
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: isReadOnly
+                          ? 'Group is read-only (host offline)...'
+                          : 'Write a message...',
+                      hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 14),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide(
+                          color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.08),
+                          width: 0.8,
+                        ),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide(
+                          color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.08),
+                          width: 0.8,
+                        ),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: const BorderSide(
+                          color: TelegramTheme.primaryBlue,
+                          width: 1.2,
+                        ),
+                      ),
+                      filled: true,
+                      fillColor: isDark
+                          ? TelegramTheme.darkBackground
+                          : Colors.grey.shade100,
                     ),
+                    onChanged: (text) {
+                      final hasText = text.trim().isNotEmpty;
+                      if (hasText != _isComposing) {
+                        setState(() {
+                          _isComposing = hasText;
+                        });
+                      }
+                      if (!isGroup) {
+                        provider.sendTypingIndicator(hasText);
+                      }
+                    },
+                    onSubmitted: isReadOnly ? null : (_) => _handleSubmitted(provider),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  decoration: BoxDecoration(
+                    color: isReadOnly ? Colors.grey : TelegramTheme.primaryBlue,
+                    shape: BoxShape.circle,
+                    boxShadow: isReadOnly
+                        ? null
+                        : [
+                            BoxShadow(
+                              color: TelegramTheme.primaryBlue.withValues(alpha: 0.35),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                  ),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 180),
+                    transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
+                    child: _isComposing || isGroup
+                        ? IconButton(
+                            key: const ValueKey('send_btn'),
+                            icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                            tooltip: 'Send Message',
+                            onPressed: _isComposing && !isReadOnly
+                                ? () => _handleSubmitted(provider)
+                                : null,
+                          )
+                        : IconButton(
+                            key: const ValueKey('mic_btn'),
+                            icon: const Icon(Icons.mic_rounded, color: Colors.white, size: 20),
+                            tooltip: 'Record Voice Note',
+                            onPressed: !isReadOnly
+                                ? () {
+                                    HapticFeedback.mediumImpact();
+                                    provider.startVoiceRecording();
+                                  }
+                                : null,
+                          ),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -623,6 +798,20 @@ class _ActiveChatViewState extends State<ActiveChatView> {
           }
         },
       ),
+    );
+  }
+
+  void _openLocationDialog(BuildContext context, ChatProvider provider) {
+    LocationShareDialog.show(
+      context,
+      onShare: (lat, lng, name, address) {
+        provider.sendLocation(
+          latitude: lat,
+          longitude: lng,
+          name: name,
+          address: address,
+        );
+      },
     );
   }
 
@@ -894,5 +1083,398 @@ class _ActiveChatViewState extends State<ActiveChatView> {
         }
       }
     }
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  Widget _buildDateBadge(DateTime date, bool isDark) {
+    final now = DateTime.now();
+    String label;
+    if (_isSameDay(date, now)) {
+      label = 'Today';
+    } else if (_isSameDay(date, now.subtract(const Duration(days: 1)))) {
+      label = 'Yesterday';
+    } else if (date.year == now.year) {
+      label = DateFormat('MMMM d').format(date);
+    } else {
+      label = DateFormat('MMMM d, yyyy').format(date);
+    }
+
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: isDark
+              ? Colors.black.withValues(alpha: 0.35)
+              : Colors.black.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11,
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _jumpToMessage(String messageId, List<ChatMessage> messages) {
+    final index = messages.indexWhere((m) => m.id == messageId);
+    if (index != -1 && _scrollController.hasClients) {
+      final target = index * 75.0;
+      _scrollController.animateTo(
+        target.clamp(0.0, _scrollController.position.maxScrollExtent),
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+}
+
+/// Modal dialog allowing the user to select and share a geographic location
+class LocationShareDialog extends StatefulWidget {
+  final void Function(double latitude, double longitude, String name, String? address) onShare;
+
+  const LocationShareDialog({
+    super.key,
+    required this.onShare,
+  });
+
+  static Future<void> show(
+    BuildContext context, {
+    required void Function(double latitude, double longitude, String name, String? address) onShare,
+  }) {
+    return showDialog(
+      context: context,
+      builder: (ctx) => LocationShareDialog(onShare: onShare),
+    );
+  }
+
+  @override
+  State<LocationShareDialog> createState() => _LocationShareDialogState();
+}
+
+class _PresetLocation {
+  final String title;
+  final String subtitle;
+  final double latitude;
+  final double longitude;
+  final IconData icon;
+
+  const _PresetLocation({
+    required this.title,
+    required this.subtitle,
+    required this.latitude,
+    required this.longitude,
+    required this.icon,
+  });
+}
+
+class _LocationShareDialogState extends State<LocationShareDialog> {
+  final _nameController = TextEditingController(text: 'Current Location');
+  final _latController = TextEditingController(text: '37.7749');
+  final _lngController = TextEditingController(text: '-122.4194');
+  final _addressController = TextEditingController();
+
+  final List<_PresetLocation> _presets = const [
+    _PresetLocation(
+      title: 'Current Location',
+      subtitle: 'Accurate to device sensors',
+      latitude: 37.7749,
+      longitude: -122.4194,
+      icon: Icons.my_location_rounded,
+    ),
+    _PresetLocation(
+      title: 'Coffee & Coworking',
+      subtitle: 'Downtown Workspace',
+      latitude: 37.7891,
+      longitude: -122.4014,
+      icon: Icons.local_cafe_rounded,
+    ),
+    _PresetLocation(
+      title: 'Tech Campus / Lab',
+      subtitle: 'Hardware & Mesh Node Lab',
+      latitude: 37.4220,
+      longitude: -122.0841,
+      icon: Icons.computer_rounded,
+    ),
+    _PresetLocation(
+      title: 'Central Station',
+      subtitle: 'Public Transit Terminal',
+      latitude: 37.7766,
+      longitude: -122.3942,
+      icon: Icons.train_rounded,
+    ),
+  ];
+
+  void _applyPreset(_PresetLocation preset) {
+    setState(() {
+      _nameController.text = preset.title;
+      _latController.text = preset.latitude.toString();
+      _lngController.text = preset.longitude.toString();
+      _addressController.text = preset.subtitle;
+    });
+  }
+
+  void _submit() {
+    final lat = double.tryParse(_latController.text.trim());
+    final lng = double.tryParse(_lngController.text.trim());
+    final name = _nameController.text.trim().isEmpty ? 'Shared Location' : _nameController.text.trim();
+    final address = _addressController.text.trim().isEmpty ? null : _addressController.text.trim();
+
+    if (lat == null || lng == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter valid numeric latitude & longitude'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Coordinates out of range (-90..90, -180..180)'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    widget.onShare(lat, lng, name, address);
+    Navigator.of(context).pop();
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _latController.dispose();
+    _lngController.dispose();
+    _addressController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = Theme.of(context).primaryColor;
+
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      backgroundColor: isDark ? const Color(0xFF1E222B) : Colors.white,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Icon(
+                      Icons.location_on_rounded,
+                      color: Colors.redAccent,
+                      size: 26,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Share Location',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: isDark ? Colors.white : Colors.black87,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Send coordinates to open directly in device maps',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? Colors.white60 : Colors.black54,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, size: 20),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
+              // Presets row
+              Text(
+                'QUICK PRESETS',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.8,
+                  color: isDark ? Colors.white54 : Colors.black45,
+                ),
+              ),
+              const SizedBox(height: 10),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: _presets.map((preset) {
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8.0),
+                      child: InkWell(
+                        onTap: () => _applyPreset(preset),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF282E3A) : const Color(0xFFF0F3F8),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isDark ? Colors.white10 : Colors.black12,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(preset.icon, size: 16, color: primaryColor),
+                              const SizedBox(width: 6),
+                              Text(
+                                preset.title,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: isDark ? Colors.white70 : Colors.black87,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // Location Name
+              TextField(
+                controller: _nameController,
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14),
+                decoration: InputDecoration(
+                  labelText: 'Place Name / Label',
+                  prefixIcon: const Icon(Icons.label_outline_rounded, size: 20),
+                  isDense: true,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Lat & Long Row
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _latController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                      style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14),
+                      decoration: InputDecoration(
+                        labelText: 'Latitude',
+                        prefixIcon: const Icon(Icons.explore_outlined, size: 20),
+                        isDense: true,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      controller: _lngController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                      style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14),
+                      decoration: InputDecoration(
+                        labelText: 'Longitude',
+                        prefixIcon: const Icon(Icons.explore_outlined, size: 20),
+                        isDense: true,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // Address / Notes
+              TextField(
+                controller: _addressController,
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14),
+                decoration: InputDecoration(
+                  labelText: 'Address or Notes (Optional)',
+                  prefixIcon: const Icon(Icons.notes_rounded, size: 20),
+                  isDense: true,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // Buttons
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      onPressed: _submit,
+                      icon: const Icon(Icons.send_rounded, size: 18),
+                      label: const Text(
+                        'Send Location',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

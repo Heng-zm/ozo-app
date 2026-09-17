@@ -33,8 +33,8 @@ class VoiceNotePlayer extends StatelessWidget {
     );
     final currentPosition = isCurrent ? provider.playbackPosition : Duration.zero;
 
-    final hasLocalFile = message.fileMetadata?.localPath != null &&
-        File(message.fileMetadata!.localPath!).existsSync();
+    final hasLocalFile = message.fileMetadata?.isCompleted == true &&
+        message.fileMetadata?.localPath != null;
 
     final amplitudes = message.waveformAmplitudes != null &&
             message.waveformAmplitudes!.isNotEmpty
@@ -89,28 +89,34 @@ class VoiceNotePlayer extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Waveform bars
-                GestureDetector(
-                  onTapDown: (details) {
-                    if (!hasLocalFile || totalDuration.inMilliseconds == 0) return;
-                    final box = details.localPosition;
-                    // Seek based on horizontal tap offset
-                    final fraction = (box.dx / 170.0).clamp(0.0, 1.0);
-                    final seekMs = (totalDuration.inMilliseconds * fraction).toInt();
-                    provider.seekVoiceNote(Duration(milliseconds: seekMs));
-                  },
-                  child: SizedBox(
-                    height: 26,
-                    child: CustomPaint(
-                      painter: _WaveformPainter(
-                        amplitudes: amplitudes,
-                        progress: progressRatio,
-                        activeColor: activeColor,
-                        inactiveColor: inactiveColor,
+                // Waveform bars with drag and tap scrub
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final width = constraints.maxWidth;
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapDown: (details) {
+                        if (!hasLocalFile) return;
+                        _handleSeek(details.localPosition, width, totalDuration, provider);
+                      },
+                      onHorizontalDragUpdate: (details) {
+                        if (!hasLocalFile) return;
+                        _handleSeek(details.localPosition, width, totalDuration, provider);
+                      },
+                      child: SizedBox(
+                        height: 28,
+                        width: double.infinity,
+                        child: CustomPaint(
+                          painter: _WaveformPainter(
+                            amplitudes: amplitudes,
+                            progress: progressRatio,
+                            activeColor: activeColor,
+                            inactiveColor: inactiveColor,
+                          ),
+                        ),
                       ),
-                      size: const Size(double.infinity, 26),
-                    ),
-                  ),
+                    );
+                  },
                 ),
                 const SizedBox(height: 4),
 
@@ -156,6 +162,18 @@ class VoiceNotePlayer extends StatelessWidget {
       ),
     );
   }
+
+  void _handleSeek(
+    Offset localPosition,
+    double totalWidth,
+    Duration totalDuration,
+    ChatProvider provider,
+  ) {
+    if (totalDuration.inMilliseconds == 0 || totalWidth <= 0) return;
+    final fraction = (localPosition.dx / totalWidth).clamp(0.0, 1.0);
+    final seekMs = (totalDuration.inMilliseconds * fraction).toInt();
+    provider.seekVoiceNote(Duration(milliseconds: seekMs));
+  }
 }
 
 class _WaveformPainter extends CustomPainter {
@@ -173,34 +191,32 @@ class _WaveformPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (amplitudes.isEmpty) return;
+    if (amplitudes.isEmpty || size.width <= 0) return;
 
-    final barWidth = 3.0;
-    final spacing = 2.5;
-    final totalBars = amplitudes.length;
-    final activeIndex = (totalBars * progress).floor();
+    const barWidth = 3.0;
+    const minSpacing = 2.0;
+    final maxBarsPossible = (size.width / (barWidth + minSpacing)).floor();
+    final barsCount = amplitudes.length.clamp(1, maxBarsPossible);
+    final spacing = (size.width - (barsCount * barWidth)) / (barsCount > 1 ? barsCount - 1 : 1);
 
-    final paintActive = Paint()
-      ..color = activeColor
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = barWidth;
+    final activeIndex = (barsCount * progress).floor();
 
-    final paintInactive = Paint()
-      ..color = inactiveColor
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = barWidth;
+    final paintActive = Paint()..color = activeColor;
+    final paintInactive = Paint()..color = inactiveColor;
 
     double x = 0;
-    for (int i = 0; i < totalBars; i++) {
-      final amp = amplitudes[i].clamp(0.1, 1.0);
+    for (int i = 0; i < barsCount; i++) {
+      final amp = amplitudes[i % amplitudes.length].clamp(0.12, 1.0);
       final barHeight = (size.height * amp).clamp(4.0, size.height);
       final yTop = (size.height - barHeight) / 2;
-      final yBottom = yTop + barHeight;
 
       final paint = (i <= activeIndex) ? paintActive : paintInactive;
-      canvas.drawLine(Offset(x, yTop), Offset(x, yBottom), paint);
+      final rrect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(x, yTop, barWidth, barHeight),
+        const Radius.circular(2.0),
+      );
+      canvas.drawRRect(rrect, paint);
       x += barWidth + spacing;
-      if (x > size.width) break;
     }
   }
 
@@ -208,6 +224,7 @@ class _WaveformPainter extends CustomPainter {
   bool shouldRepaint(covariant _WaveformPainter oldDelegate) {
     return oldDelegate.progress != progress ||
         oldDelegate.activeColor != activeColor ||
+        oldDelegate.inactiveColor != inactiveColor ||
         oldDelegate.amplitudes != amplitudes;
   }
 }

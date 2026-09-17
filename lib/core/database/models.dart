@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import '../constants.dart';
 
-enum MessageType { text, file, image, voice, sticker }
+enum MessageType { text, file, image, voice, sticker, location }
 enum MessageStatus { pending, sent, delivered, read, failed }
 enum TransferDirection { upload, download }
 enum TransferStatus { offered, transferring, paused, completed, failed }
@@ -438,6 +438,7 @@ class ChatMessage {
 
   bool get isVoice => type == MessageType.voice;
   bool get isSticker => type == MessageType.sticker;
+  bool get isLocation => type == MessageType.location;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -612,6 +613,8 @@ class FileTransferInfo {
   TransferStatus status;
   double speedBytesPerSec;
   final String sha256;
+  int retryCount;
+  int? estimatedRemainingSeconds;
 
   FileTransferInfo({
     required this.transferId,
@@ -627,10 +630,36 @@ class FileTransferInfo {
     this.status = TransferStatus.offered,
     this.speedBytesPerSec = 0.0,
     required this.sha256,
+    this.retryCount = 0,
+    this.estimatedRemainingSeconds,
   });
 
   double get progress =>
       fileSize > 0 ? (bytesTransferred / fileSize).clamp(0.0, 1.0) : 0.0;
+
+  String get formattedSpeed {
+    if (speedBytesPerSec < 1024) {
+      return '${speedBytesPerSec.toStringAsFixed(0)} B/s';
+    } else if (speedBytesPerSec < 1024 * 1024) {
+      return '${(speedBytesPerSec / 1024).toStringAsFixed(1)} KB/s';
+    } else {
+      return '${(speedBytesPerSec / (1024 * 1024)).toStringAsFixed(2)} MB/s';
+    }
+  }
+
+  String get formattedEta {
+    if (estimatedRemainingSeconds == null || estimatedRemainingSeconds! <= 0) {
+      return '';
+    }
+    final sec = estimatedRemainingSeconds!;
+    if (sec < 60) {
+      return '${sec}s left';
+    } else if (sec < 3600) {
+      return '${sec ~/ 60}m ${sec % 60}s left';
+    } else {
+      return '${sec ~/ 3600}h ${(sec % 3600) ~/ 60}m left';
+    }
+  }
 }
 
 /// Represents an individual expressive sticker
@@ -907,4 +936,43 @@ class PairingConfirmationRequest {
   });
 }
 
+/// Represents geographic location payload shared in a chat message
+class LocationData {
+  final double latitude;
+  final double longitude;
+  final String name;
+  final String? address;
 
+  const LocationData({
+    required this.latitude,
+    required this.longitude,
+    required this.name,
+    this.address,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'latitude': latitude,
+        'longitude': longitude,
+        'name': name,
+        if (address != null) 'address': address,
+      };
+
+  factory LocationData.fromJson(Map<String, dynamic> json) => LocationData(
+        latitude: (json['latitude'] as num).toDouble(),
+        longitude: (json['longitude'] as num).toDouble(),
+        name: json['name'] as String? ?? 'Shared Location',
+        address: json['address'] as String?,
+      );
+
+  static LocationData? tryParse(String content) {
+    try {
+      final decoded = jsonDecode(content);
+      if (decoded is Map<String, dynamic> &&
+          decoded.containsKey('latitude') &&
+          decoded.containsKey('longitude')) {
+        return LocationData.fromJson(decoded);
+      }
+    } catch (_) {}
+    return null;
+  }
+}

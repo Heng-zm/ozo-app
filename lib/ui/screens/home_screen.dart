@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -46,50 +48,128 @@ class HomeScreen extends StatelessWidget {
     return AppLockScreen(
       child: LayoutBuilder(
         builder: (context, constraints) {
-        final isDesktop = constraints.maxWidth >= 720;
-        final selectedPeer = chatProvider.activePeer;
-        final selectedGroup = chatProvider.activeGroup;
+          final screenWidth = constraints.maxWidth;
+          final isDesktop = screenWidth >= 1100;
+          final isWideScreen = screenWidth >= 768;
+          final selectedPeer = chatProvider.activePeer;
+          final selectedGroup = chatProvider.activeGroup;
 
-        if (isDesktop) {
-          // Desktop 2-column Telegram layout
-          return Scaffold(
-            body: Row(
-              children: [
-                SizedBox(
-                  width: 320,
-                  child: _buildSidebar(context, chatProvider),
-                ),
-                const VerticalDivider(width: 1, thickness: 1),
-                Expanded(
-                  child: selectedGroup != null
-                      ? ActiveChatView(group: selectedGroup)
-                      : (selectedPeer != null
-                          ? ActiveChatView(peer: selectedPeer)
-                          : _buildEmptyState(context)),
-                ),
-              ],
-            ),
-          );
-        } else {
-          // Mobile stack layout
-          if (selectedGroup != null) {
-            return ActiveChatView(
-              group: selectedGroup,
-              onBack: () => chatProvider.setActiveGroup(null),
-            );
-          } else if (selectedPeer != null) {
-            return ActiveChatView(
-              peer: selectedPeer,
-              onBack: () => chatProvider.setActivePeer(null),
+          if (isWideScreen) {
+            // Multi-tier Tablet & Desktop 2-column layout with adaptive sidebar width
+            final sidebarWidth = isDesktop
+                ? 360.0
+                : (screenWidth * 0.36).clamp(280.0, 330.0);
+
+            return Scaffold(
+              body: Row(
+                children: [
+                  SizedBox(
+                    width: sidebarWidth,
+                    child: _buildSidebar(context, chatProvider),
+                  ),
+                  const VerticalDivider(width: 1, thickness: 1),
+                  Expanded(
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      transitionBuilder: (child, animation) {
+                        return FadeTransition(
+                          opacity: animation,
+                          child: child,
+                        );
+                      },
+                      child: KeyedSubtree(
+                        key: ValueKey(selectedGroup?.id ?? selectedPeer?.id ?? 'empty'),
+                        child: selectedGroup != null
+                            ? ActiveChatView(group: selectedGroup)
+                            : (selectedPeer != null
+                                ? ActiveChatView(peer: selectedPeer)
+                                : _buildEmptyState(context)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             );
           } else {
-            return Scaffold(
-              body: _buildSidebar(context, chatProvider),
+            // Mobile stack layout with iOS slide & fade transitions and edge-swipe back
+            final hasActiveChat = selectedGroup != null || selectedPeer != null;
+
+            return WillPopScope(
+              onWillPop: () async {
+                if (hasActiveChat) {
+                  HapticFeedback.lightImpact();
+                  chatProvider.setActiveGroup(null);
+                  chatProvider.setActivePeer(null);
+                  return false;
+                }
+                return true;
+              },
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 280),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) {
+                  final isChat = child.key == const ValueKey('active_chat_pane');
+                  if (isChat) {
+                    return SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(1.0, 0.0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: FadeTransition(
+                        opacity: Tween<double>(begin: 0.6, end: 1.0).animate(animation),
+                        child: child,
+                      ),
+                    );
+                  } else {
+                    return SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(-0.25, 0.0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: FadeTransition(
+                        opacity: animation,
+                        child: child,
+                      ),
+                    );
+                  }
+                },
+                child: hasActiveChat
+                    ? _IosSwipeBackDetector(
+                        key: const ValueKey('active_chat_pane'),
+                        onBack: () {
+                          HapticFeedback.lightImpact();
+                          chatProvider.setActiveGroup(null);
+                          chatProvider.setActivePeer(null);
+                        },
+                        child: selectedGroup != null
+                            ? ActiveChatView(
+                                group: selectedGroup,
+                                onBack: () {
+                                  HapticFeedback.lightImpact();
+                                  chatProvider.setActiveGroup(null);
+                                },
+                              )
+                            : ActiveChatView(
+                                peer: selectedPeer!,
+                                onBack: () {
+                                  HapticFeedback.lightImpact();
+                                  chatProvider.setActivePeer(null);
+                                },
+                              ),
+                      )
+                    : Scaffold(
+                        key: const ValueKey('sidebar_pane'),
+                        body: _buildSidebar(context, chatProvider),
+                      ),
+              ),
             );
           }
-        }
-      },
-    ));
+        },
+      ),
+    );
   }
 
   Widget _buildSidebar(BuildContext context, ChatProvider provider) {
@@ -100,6 +180,8 @@ class HomeScreen extends StatelessWidget {
       child: Column(
         children: [
           _buildSidebarHeader(context, provider, isDark),
+          if (provider.pendingBackupMigration != null)
+            _buildPendingMigrationBanner(context, provider, isDark),
           _buildSearchBar(context, provider, isDark),
           const ChatFoldersBar(),
           Expanded(
@@ -108,6 +190,92 @@ class HomeScreen extends StatelessWidget {
                 : _buildChatsList(context, provider, isDark),
           ),
           _buildBottomNodeInfo(context, provider, isDark),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPendingMigrationBanner(
+    BuildContext context,
+    ChatProvider provider,
+    bool isDark,
+  ) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E3A5F) : const Color(0xFFE3F2FD),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: TelegramTheme.primaryBlue.withValues(alpha: 0.4),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.cloud_download_rounded,
+                color: TelegramTheme.primaryBlue,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Incoming Backup Migration',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              GestureDetector(
+                onTap: () => provider.clearPendingBackupMigration(),
+                child: const Icon(
+                  Icons.close_rounded,
+                  size: 16,
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'A peer sent an encrypted account backup. Tap to restore.',
+            style: TextStyle(
+              fontSize: 11,
+              color: isDark ? Colors.white70 : Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: TelegramTheme.primaryBlue,
+                foregroundColor: Colors.white,
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              onPressed: () {
+                final payload = provider.pendingBackupMigration;
+                if (payload != null) {
+                  showDialog(
+                    context: context,
+                    builder: (_) => BackupDialog(
+                      initialTabIndex: 1,
+                      initialPayload: jsonEncode(payload),
+                    ),
+                  );
+                }
+              },
+              child: const Text('Restore Backup', style: TextStyle(fontSize: 12)),
+            ),
+          ),
         ],
       ),
     );
@@ -166,11 +334,11 @@ class HomeScreen extends StatelessWidget {
       return b.lastSeen.compareTo(a.lastSeen);
     });
 
-    // Sort groups: pinned first, then by createdAt
+    // Sort groups: pinned first, then by createdAt (newest first)
     groups.sort((a, b) {
       if (a.isPinned && !b.isPinned) return -1;
       if (!a.isPinned && b.isPinned) return 1;
-      return a.createdAt.compareTo(b.createdAt);
+      return b.createdAt.compareTo(a.createdAt);
     });
 
     if (peers.isEmpty && groups.isEmpty) {
@@ -199,57 +367,77 @@ class HomeScreen extends StatelessWidget {
             final isSelected = provider.activeGroup?.id == group.id;
             final unread = provider.getUnreadCount(group.id);
 
-            return ListTile(
-              selected: isSelected,
-              selectedTileColor: isDark
-                  ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
-                  : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-              onTap: () => provider.setActiveGroup(group),
-              onLongPress: () => _showChatActionDialog(context, provider, group.id, group.name, group.isPinned, true),
-              leading: CircleAvatar(
-                radius: 22,
-                backgroundColor: Colors.indigo.shade600,
-                child: const Icon(Icons.group_rounded, color: Colors.white, size: 20),
-              ),
-              title: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      group.name,
-                      style: TextStyle(
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
-                        fontSize: 14,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (group.isPinned)
-                    const Icon(Icons.push_pin_rounded, size: 14, color: TelegramTheme.primaryBlue),
-                ],
-              ),
-              subtitle: Text(
-                '${group.memberIds.length} members • Host: ${group.hostName}${group.backupHostName != null ? ' (Backup: ${group.backupHostName})' : ''}',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+            return _PressScaleTile(
+              child: ListTile(
+                selected: isSelected,
+                selectedTileColor: isDark
+                    ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
+                    : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                onTap: () {
+                  HapticFeedback.lightImpact();
+                  provider.setActiveGroup(group);
+                },
+                onLongPress: () {
+                  HapticFeedback.mediumImpact();
+                  _showChatActionDialog(context, provider, group.id, group.name, group.isPinned, true);
+                },
+                leading: CircleAvatar(
+                  radius: 22,
+                  backgroundColor: Colors.indigo.shade600,
+                  child: const Icon(Icons.group_rounded, color: Colors.white, size: 20),
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: unread > 0
-                  ? Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: TelegramTheme.primaryBlue,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
+                title: Row(
+                  children: [
+                    Expanded(
                       child: Text(
-                        '$unread',
-                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                        group.name,
+                        style: TextStyle(
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    )
-                  : null,
+                    ),
+                    if (group.isPinned)
+                      const Icon(Icons.push_pin_rounded, size: 14, color: TelegramTheme.primaryBlue),
+                  ],
+                ),
+                subtitle: Text(
+                  '${group.memberIds.length} members • Host: ${group.hostName}${group.backupHostName != null ? ' (Backup: ${group.backupHostName})' : ''}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (unread > 0)
+                      Container(
+                        margin: const EdgeInsets.only(right: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: TelegramTheme.primaryBlue,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '$unread',
+                          style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      size: 18,
+                      color: isSelected
+                          ? TelegramTheme.primaryBlue
+                          : (isDark ? Colors.white24 : Colors.black26),
+                    ),
+                  ],
+                ),
+              ),
             );
           }),
           const Divider(height: 16, indent: 16, endIndent: 16),
@@ -262,10 +450,14 @@ class HomeScreen extends StatelessWidget {
             final isSelected = provider.activePeer?.id == peer.id;
             return GestureDetector(
               onSecondaryTap: () => _showChatActionDialog(context, provider, peer.id, peer.name, peer.isPinned, false),
-              onLongPress: () => _showChatActionDialog(context, provider, peer.id, peer.name, peer.isPinned, false),
+              onLongPress: () {
+                HapticFeedback.mediumImpact();
+                _showChatActionDialog(context, provider, peer.id, peer.name, peer.isPinned, false);
+              },
               child: PeerListTile(
                 peer: peer,
                 isSelected: isSelected,
+                unreadCount: provider.getUnreadCount(peer.id),
                 onTap: () => provider.setActivePeer(peer),
               ),
             );
@@ -323,6 +515,7 @@ class HomeScreen extends StatelessWidget {
                 title: Text(g.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                 subtitle: Text('Group • ${g.memberIds.length} members', style: const TextStyle(fontSize: 12)),
                 onTap: () {
+                  HapticFeedback.lightImpact();
                   provider.setActiveGroup(g);
                   provider.setSearchQuery('');
                 },
@@ -336,6 +529,7 @@ class HomeScreen extends StatelessWidget {
                 title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                 subtitle: Text(p.isOnline ? 'Online' : 'Last seen recently', style: const TextStyle(fontSize: 12)),
                 onTap: () {
+                  HapticFeedback.lightImpact();
                   provider.setActivePeer(p);
                   provider.setSearchQuery('');
                 },
@@ -494,19 +688,22 @@ class HomeScreen extends StatelessWidget {
     ChatProvider provider,
     bool isDark,
   ) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: isDark ? TelegramTheme.darkSidebar : Colors.white,
-        border: Border(
-          bottom: BorderSide(
-            color: isDark ? Colors.white10 : Colors.grey.shade200,
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xCC17212B) : Colors.white.withValues(alpha: 0.85),
+            border: Border(
+              bottom: BorderSide(
+                color: isDark ? Colors.white10 : Colors.grey.shade200,
+              ),
+            ),
           ),
-        ),
-      ),
-      child: SafeArea(
-        bottom: false,
-        child: Row(
+          child: SafeArea(
+            bottom: false,
+            child: Row(
           children: [
             GestureDetector(
               onTap: () {
@@ -707,8 +904,9 @@ class HomeScreen extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
+    )),
+  );
+}
 
   Widget _buildBottomNodeInfo(
     BuildContext context,
@@ -889,3 +1087,81 @@ class HomeScreen extends StatelessWidget {
     );
   }
 }
+
+/// Detects edge swipe from left border on iOS mobile to pop active chat
+class _IosSwipeBackDetector extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onBack;
+
+  const _IosSwipeBackDetector({
+    super.key,
+    required this.child,
+    required this.onBack,
+  });
+
+  @override
+  State<_IosSwipeBackDetector> createState() => _IosSwipeBackDetectorState();
+}
+
+class _IosSwipeBackDetectorState extends State<_IosSwipeBackDetector> {
+  double _dragStartX = 0;
+  bool _isEligibleSwipe = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onHorizontalDragStart: (details) {
+        if (details.globalPosition.dx <= 36) {
+          _dragStartX = details.globalPosition.dx;
+          _isEligibleSwipe = true;
+        } else {
+          _isEligibleSwipe = false;
+        }
+      },
+      onHorizontalDragUpdate: (details) {
+        if (!_isEligibleSwipe) return;
+        if (details.globalPosition.dx - _dragStartX > 70) {
+          _isEligibleSwipe = false;
+          widget.onBack();
+        }
+      },
+      onHorizontalDragEnd: (_) {
+        _isEligibleSwipe = false;
+      },
+      onHorizontalDragCancel: () {
+        _isEligibleSwipe = false;
+      },
+      child: widget.child,
+    );
+  }
+}
+
+/// Springy scale feedback tile on touch
+class _PressScaleTile extends StatefulWidget {
+  final Widget child;
+  const _PressScaleTile({required this.child});
+
+  @override
+  State<_PressScaleTile> createState() => _PressScaleTileState();
+}
+
+class _PressScaleTileState extends State<_PressScaleTile> {
+  bool _isPressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedScale(
+      scale: _isPressed ? 0.975 : 1.0,
+      duration: const Duration(milliseconds: 100),
+      curve: Curves.easeOutCubic,
+      child: Listener(
+        onPointerDown: (_) => setState(() => _isPressed = true),
+        onPointerUp: (_) => setState(() => _isPressed = false),
+        onPointerCancel: (_) => setState(() => _isPressed = false),
+        child: widget.child,
+      ),
+    );
+  }
+}
+

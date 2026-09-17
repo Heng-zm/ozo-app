@@ -82,9 +82,15 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>OZO requires microphone access to record and send encrypted voice notes.</string>
 
-	<!-- Camera & QR Code Scanning -->
+	<!-- Camera & Photo Capture / QR Code Scanning -->
 	<key>NSCameraUsageDescription</key>
-	<string>OZO requires camera access to scan QR codes for pairing linked devices and connecting to peer hotspots.</string>
+	<string>OZO requires camera access to take photos to share with peers and scan QR codes for pairing companion devices.</string>
+
+	<!-- Location Sharing -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>OZO requires location access to share your coordinates or location pin with peers in chat.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>OZO requires location access to share your coordinates with peers.</string>
 
 	<!-- Photo & Video Sharing -->
 	<key>NSPhotoLibraryUsageDescription</key>
@@ -95,6 +101,22 @@
 	<!-- App Lock & Biometrics -->
 	<key>NSFaceIDUsageDescription</key>
 	<string>OZO uses Face ID to securely unlock your app and safeguard your private messages.</string>
+
+	<!-- Document & File Sharing (Files App Integration) -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+
+	<!-- Query schemes for navigation and maps -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>maps</string>
+		<string>comgooglemaps</string>
+		<string>bingmaps</string>
+		<string>https</string>
+		<string>http</string>
+	</array>
 
 	<!-- Local Network & Internet Security Configuration -->
 	<key>NSAppTransportSecurity</key>

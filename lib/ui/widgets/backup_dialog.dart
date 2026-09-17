@@ -7,7 +7,14 @@ import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
 
 class BackupDialog extends StatefulWidget {
-  const BackupDialog({super.key});
+  final int initialTabIndex;
+  final String? initialPayload;
+
+  const BackupDialog({
+    super.key,
+    this.initialTabIndex = 0,
+    this.initialPayload,
+  });
 
   @override
   State<BackupDialog> createState() => _BackupDialogState();
@@ -29,7 +36,14 @@ class _BackupDialogState extends State<BackupDialog>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(
+      length: 3,
+      vsync: this,
+      initialIndex: widget.initialTabIndex,
+    );
+    if (widget.initialPayload != null) {
+      _importPayloadController.text = widget.initialPayload!;
+    }
   }
 
   @override
@@ -92,6 +106,9 @@ class _BackupDialogState extends State<BackupDialog>
     try {
       final container = jsonDecode(payload) as Map<String, dynamic>;
       final success = await provider.importBackup(container, pwd);
+      if (success) {
+        provider.clearPendingBackupMigration();
+      }
       setState(() {
         _isProcessing = false;
         _statusMessage = success

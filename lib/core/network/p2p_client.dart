@@ -71,6 +71,8 @@ class P2pClient {
         uri.toString(),
       ).timeout(const Duration(seconds: 8));
 
+      socket.pingInterval = const Duration(seconds: 15);
+
       _sockets[peer.id] = socket;
 
       // Handle events on this client socket (duplex)

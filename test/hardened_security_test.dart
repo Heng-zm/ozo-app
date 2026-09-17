@@ -16,7 +16,7 @@ void main() {
     });
 
     test('PBKDF2-HMAC-SHA256 (100k rounds) PIN setting and verification', () async {
-      final security = SecurityService();
+      final security = SecurityService.isolated();
       await security.initialize();
 
       expect(security.isPinConfigured, isFalse);
@@ -60,7 +60,7 @@ void main() {
         'security_pin_salt': legacySalt,
       });
 
-      final security = SecurityService();
+      final security = SecurityService.isolated();
       await security.initialize();
 
       expect(security.settings.pinHash.length, equals(64)); // Initially legacy
@@ -86,7 +86,7 @@ void main() {
 
     setUp(() async {
       tempDir = await Directory.systemTemp.createTemp('db_hardening_test');
-      db = AppDatabase();
+      db = AppDatabase.isolated();
       await db.initialize(customDirectory: tempDir);
     });
 
@@ -197,12 +197,14 @@ void main() {
       // Export encrypted backup
       final backupEnvelope = await db.exportEncryptedBackup(password);
 
-      // Check format versioning and PBKDF2 envelope metadata
+      // Check format versioning and PBKDF2 ChaCha20-Poly1305 AEAD envelope metadata
       expect(backupEnvelope['format'], equals('ozobackup'));
-      expect(backupEnvelope['version'], equals(2));
+      expect(backupEnvelope['version'], equals(3));
       expect(backupEnvelope['kdf'], equals('pbkdf2-hmac-sha256-100k'));
+      expect(backupEnvelope['cipher'], equals('chacha20-poly1305'));
       expect(backupEnvelope['salt'], isNotEmpty);
-      expect(backupEnvelope['checksum'], isNotEmpty);
+      expect(backupEnvelope['nonce'], isNotEmpty);
+      expect(backupEnvelope['mac'], isNotEmpty);
       expect(backupEnvelope['payload'], isNotEmpty);
 
       // Test import with incorrect password returns false
@@ -212,7 +214,7 @@ void main() {
 
       // Test import into a fresh database with correct password succeeds
       final tempDir2 = await Directory.systemTemp.createTemp('db_restore_test');
-      final restoreDb = AppDatabase();
+      final restoreDb = AppDatabase.isolated();
       await restoreDb.initialize(customDirectory: tempDir2);
 
       final successResult =

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
@@ -45,6 +46,7 @@ class _AppLockScreenState extends State<AppLockScreen>
 
   Future<void> _onKeyPress(String val, ChatProvider provider) async {
     if (_enteredPin.length >= 6) return;
+    HapticFeedback.selectionClick();
     setState(() {
       _errorMessage = null;
       _enteredPin += val;
@@ -55,11 +57,13 @@ class _AppLockScreenState extends State<AppLockScreen>
       final unlocked = await provider.security.unlock(pinToVerify);
       if (!mounted) return;
       if (unlocked) {
+        HapticFeedback.mediumImpact();
         setState(() {
           _enteredPin = '';
           _errorMessage = null;
         });
       } else if (pinToVerify.length == 4 || pinToVerify.length == 6) {
+        HapticFeedback.heavyImpact();
         setState(() {
           _errorMessage = 'Incorrect Passcode';
           _enteredPin = '';
@@ -70,6 +74,7 @@ class _AppLockScreenState extends State<AppLockScreen>
 
   void _onBackspace() {
     if (_enteredPin.isNotEmpty) {
+      HapticFeedback.selectionClick();
       setState(() {
         _enteredPin = _enteredPin.substring(0, _enteredPin.length - 1);
         _errorMessage = null;
@@ -187,19 +192,7 @@ class _AppLockScreenState extends State<AppLockScreen>
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          if (provider.security.settings.isBiometricEnabled)
-                            IconButton(
-                              icon: const Icon(
-                                Icons.fingerprint_rounded,
-                                size: 36,
-                                color: TelegramTheme.primaryBlue,
-                              ),
-                              onPressed: () {
-                                provider.security.unlockBiometric();
-                              },
-                            )
-                          else
-                            const SizedBox(width: 72),
+                          const SizedBox(width: 72),
                           _buildKeypadButton(
                             '0',
                             isDark,

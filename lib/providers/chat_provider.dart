@@ -633,7 +633,14 @@ class ChatProvider extends ChangeNotifier {
     );
 
     if (transferId != null) {
-      chatMessage.fileMetadata?.isCompleted = true;
+      chatMessage.fileMetadata = FileMetadata(
+        transferId: transferId,
+        fileName: fileName,
+        fileSize: fileSize,
+        sha256: '',
+        localPath: file.path,
+        isCompleted: true,
+      );
       chatMessage.status = MessageStatus.sent;
     } else {
       chatMessage.status = MessageStatus.failed;
@@ -646,10 +653,129 @@ class ChatProvider extends ChangeNotifier {
   Future<void> pickAndSendFile() async {
     if (_activePeer == null) return;
 
-    final pickedFile = await FilePicker.pickFile();
-    if (pickedFile == null || pickedFile.path == null) return;
+    try {
+      final result = await FilePicker.platform.pickFiles(allowMultiple: false);
+      if (result != null && result.files.isNotEmpty && result.files.single.path != null) {
+        await sendFile(File(result.files.single.path!));
+      }
+    } catch (_) {
+      try {
+        final pickedFile = await FilePicker.pickFile();
+        if (pickedFile != null && pickedFile.path != null) {
+          await sendFile(File(pickedFile.path!));
+        }
+      } catch (e) {
+        debugPrint('[ChatProvider] Error picking file: $e');
+      }
+    }
+  }
 
-    await sendFile(File(pickedFile.path!));
+  /// Captures or selects an image from camera / gallery and sends to active chat
+  Future<void> takeAndSendPhoto() async {
+    if (_activePeer == null) return;
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+      );
+      if (result != null && result.files.isNotEmpty && result.files.single.path != null) {
+        await sendFile(File(result.files.single.path!));
+      }
+    } catch (e) {
+      debugPrint('[ChatProvider] Error capturing photo: $e');
+    }
+  }
+
+  /// Sends a geographic location message to the active peer or group
+  Future<void> sendLocation({
+    required double latitude,
+    required double longitude,
+    required String name,
+    String? address,
+  }) async {
+    final locData = LocationData(
+      latitude: latitude,
+      longitude: longitude,
+      name: name,
+      address: address,
+    );
+    final jsonStr = jsonEncode(locData.toJson());
+
+    if (_activeGroup != null) {
+      final group = _activeGroup!;
+      final messageId = _uuid.v4();
+      final msg = ChatMessage(
+        id: messageId,
+        chatId: group.id,
+        senderId: _deviceId,
+        senderName: _deviceName,
+        recipientId: group.id,
+        content: jsonStr,
+        type: MessageType.location,
+        timestamp: DateTime.now(),
+        status: MessageStatus.pending,
+        isGroup: true,
+        groupId: group.id,
+      );
+      await database.saveMessage(msg);
+      notifyListeners();
+
+      if (group.hostId == _deviceId) {
+        msg.status = MessageStatus.sent;
+        await database.saveMessage(msg);
+        for (final mId in group.memberIds) {
+          if (mId == _deviceId) continue;
+          final p = database.knownPeers[mId];
+          if (p != null && p.isOnline) {
+            await client.relayGroupMessage(memberPeer: p, group: group, message: msg);
+          }
+        }
+      } else {
+        final hostPeer = database.knownPeers[group.hostId];
+        if (hostPeer != null && hostPeer.isOnline) {
+          final sent = await client.sendGroupMessage(hostPeer: hostPeer, group: group, message: msg);
+          if (sent) {
+            msg.status = MessageStatus.sent;
+            await database.saveMessage(msg);
+          }
+        }
+      }
+      notifyListeners();
+      return;
+    }
+
+    if (_activePeer == null) return;
+    final peer = _activePeer!;
+    final messageId = _uuid.v4();
+
+    final message = ChatMessage(
+      id: messageId,
+      chatId: peer.id,
+      senderId: _deviceId,
+      senderName: _deviceName,
+      recipientId: peer.id,
+      content: jsonStr,
+      type: MessageType.location,
+      timestamp: DateTime.now(),
+      status: MessageStatus.pending,
+    );
+
+    await database.saveMessage(message);
+    notifyListeners();
+
+    final sent = await client.sendMessage(
+      peer: peer,
+      message: message,
+    );
+
+    if (sent) {
+      message.status = MessageStatus.sent;
+    } else {
+      message.status = MessageStatus.failed;
+    }
+    await database.saveMessage(message);
+    notifyListeners();
   }
 
   /// Starts push-to-talk voice recording with live amplitude monitoring
@@ -791,7 +917,14 @@ class ChatProvider extends ChangeNotifier {
     );
 
     if (transferId != null) {
-      chatMessage.fileMetadata?.isCompleted = true;
+      chatMessage.fileMetadata = FileMetadata(
+        transferId: transferId,
+        fileName: fileName,
+        fileSize: fileSize,
+        sha256: '',
+        localPath: file.path,
+        isCompleted: true,
+      );
       chatMessage.status = MessageStatus.sent;
       await client.sendMessage(peer: _activePeer!, message: chatMessage);
     } else {
@@ -1054,7 +1187,16 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Map<String, dynamic>? _pendingBackupMigration;
+  Map<String, dynamic>? get pendingBackupMigration => _pendingBackupMigration;
+
+  void clearPendingBackupMigration() {
+    _pendingBackupMigration = null;
+    notifyListeners();
+  }
+
   void _handleBackupReceived(Map<String, dynamic> backup) {
+    _pendingBackupMigration = backup;
     notifyListeners();
   }
 
@@ -1199,7 +1341,14 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  void _handleIncomingMessageDeleted(String messageId) {
+  void _handleIncomingMessageDeleted(String messageId, [String? senderId]) {
+    final msg = database.getMessageById(messageId);
+    if (msg != null && senderId != null && senderId.isNotEmpty && msg.senderId != senderId) {
+      if (kDebugMode) {
+        print('Unauthorized delete attempt: sender $senderId tried to delete message of ${msg.senderId}');
+      }
+      return;
+    }
     database.deleteMessage(messageId);
     notifyListeners();
   }

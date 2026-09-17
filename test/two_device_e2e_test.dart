@@ -27,9 +27,9 @@ void main() {
     // =========================================================================
     // 1. SPIN UP DEVICE A (ALICE)
     // =========================================================================
-    final aliceCrypto = CryptoService();
+    final aliceCrypto = CryptoService.isolated();
     await aliceCrypto.initialize();
-    final aliceDb = AppDatabase();
+    final aliceDb = AppDatabase.isolated();
     await aliceDb.initialize(customDirectory: tempDirAlice);
 
     final aliceServer = P2pServer(
@@ -56,9 +56,9 @@ void main() {
     // =========================================================================
     // 2. SPIN UP DEVICE B (BOB)
     // =========================================================================
-    final bobCrypto = CryptoService();
+    final bobCrypto = CryptoService.isolated();
     await bobCrypto.initialize();
-    final bobDb = AppDatabase();
+    final bobDb = AppDatabase.isolated();
     await bobDb.initialize(customDirectory: tempDirBob);
 
     final bobServer = P2pServer(
@@ -317,9 +317,9 @@ void main() {
     final httpClient = HttpClient();
 
     // Instance 1 setup
-    final crypto1 = CryptoService();
+    final crypto1 = CryptoService.isolated();
     await crypto1.initialize(keyPrefix: 'inst1');
-    final db1 = AppDatabase();
+    final db1 = AppDatabase.isolated();
     await db1.initialize(customDirectory: sharedDocsDir, dbName: 'lan_telegram_instance1.db');
 
     final server1 = P2pServer(
@@ -336,9 +336,9 @@ void main() {
     };
 
     // Instance 2 setup in the SAME folder
-    final crypto2 = CryptoService();
+    final crypto2 = CryptoService.isolated();
     await crypto2.initialize(keyPrefix: 'inst2');
-    final db2 = AppDatabase();
+    final db2 = AppDatabase.isolated();
     await db2.initialize(customDirectory: sharedDocsDir, dbName: 'lan_telegram_instance2.db');
 
     final server2 = P2pServer(
