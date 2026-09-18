@@ -56,6 +56,9 @@ class BleService {
 
   StreamSubscription? _scanSubscription;
   StreamSubscription? _adapterSubscription;
+  BluetoothAdapterState _adapterState = BluetoothAdapterState.unknown;
+  BluetoothAdapterState get adapterState => _adapterState;
+  bool get isBluetoothOn => _adapterState == BluetoothAdapterState.on;
   int _messageCounter = 1;
 
   /// Check whether BLE is supported on the current hardware/platform
@@ -69,6 +72,20 @@ class BleService {
     }
   }
 
+  /// Request system to turn on Bluetooth (supported on Android)
+  Future<bool> turnOn() async {
+    try {
+      if (kIsWeb) return false;
+      if (Platform.isAndroid) {
+        await FlutterBluePlus.turnOn();
+        return true;
+      }
+    } catch (e) {
+      debugPrint('[BleService] turnOn error: $e');
+    }
+    return false;
+  }
+
   /// Initialize BLE event listeners and monitor Bluetooth adapter status
   Future<void> init() async {
     try {
@@ -79,9 +96,12 @@ class BleService {
       }
 
       _adapterSubscription = FlutterBluePlus.adapterState.listen((state) {
+        _adapterState = state;
         debugPrint('[BleService] Bluetooth adapter state: $state');
         if (state == BluetoothAdapterState.on) {
           _statusController.add('Bluetooth ready');
+        } else if (state == BluetoothAdapterState.off) {
+          _statusController.add('Bluetooth is turned off. Please turn on Bluetooth.');
         } else {
           _statusController.add('Bluetooth $state');
         }
@@ -94,7 +114,20 @@ class BleService {
   /// Start scanning for nearby OZO App peers
   Future<void> startScan({Duration timeout = const Duration(seconds: 15)}) async {
     final supported = await isSupported();
-    if (!supported) return;
+    if (!supported) {
+      _statusController.add('Bluetooth is not supported on this platform/device.');
+      return;
+    }
+
+    try {
+      final state = await FlutterBluePlus.adapterState.first;
+      _adapterState = state;
+      if (state != BluetoothAdapterState.on) {
+        _isScanning = false;
+        _statusController.add('Bluetooth is turned off. Please turn on Bluetooth.');
+        return;
+      }
+    } catch (_) {}
 
     if (_isScanning) {
       await stopScan();
@@ -142,7 +175,14 @@ class BleService {
     } catch (e) {
       _isScanning = false;
       debugPrint('[BleService] startScan error: $e');
-      _statusController.add('Scan error: $e');
+      final err = e.toString();
+      if (err.contains('Bluetooth must be turned on') ||
+          err.contains('turned on') ||
+          err.contains('adapter is off')) {
+        _statusController.add('Bluetooth is turned off. Please turn on Bluetooth.');
+      } else {
+        _statusController.add('Scan paused: Bluetooth unavailable.');
+      }
     }
   }
 

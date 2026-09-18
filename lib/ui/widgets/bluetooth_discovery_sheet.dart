@@ -195,6 +195,11 @@ class _BluetoothDiscoverySheetState extends State<BluetoothDiscoverySheet> {
     super.dispose();
   }
 
+  bool get _isBluetoothDisabled {
+    final s = _statusText.toLowerCase();
+    return s.contains('turned off') || s.contains('must be turned on');
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
@@ -229,10 +234,15 @@ class _BluetoothDiscoverySheetState extends State<BluetoothDiscoverySheet> {
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF007AFF).withValues(alpha: 0.15),
+                    color: (_isBluetoothDisabled ? Colors.amber : const Color(0xFF007AFF))
+                        .withValues(alpha: 0.15),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(CupertinoIcons.bluetooth, color: Color(0xFF007AFF), size: 24),
+                  child: Icon(
+                    CupertinoIcons.bluetooth,
+                    color: _isBluetoothDisabled ? Colors.amber : const Color(0xFF007AFF),
+                    size: 24,
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -247,7 +257,10 @@ class _BluetoothDiscoverySheetState extends State<BluetoothDiscoverySheet> {
                         _statusText,
                         style: TextStyle(
                           fontSize: 12,
-                          color: isDark ? Colors.white60 : Colors.black54,
+                          color: _isBluetoothDisabled
+                              ? Colors.amber
+                              : (isDark ? Colors.white60 : Colors.black54),
+                          fontWeight: _isBluetoothDisabled ? FontWeight.w600 : FontWeight.normal,
                         ),
                       ),
                     ],
@@ -258,11 +271,15 @@ class _BluetoothDiscoverySheetState extends State<BluetoothDiscoverySheet> {
                     _isScanning ? CupertinoIcons.stop_circle : CupertinoIcons.arrow_clockwise,
                     color: TelegramTheme.primaryBlue,
                   ),
-                  onPressed: () {
+                  onPressed: () async {
                     if (_isScanning) {
                       provider.bleService.stopScan();
                       setState(() => _isScanning = false);
                     } else {
+                      if (_isBluetoothDisabled) {
+                        await provider.bleService.turnOn();
+                        await Future.delayed(const Duration(milliseconds: 400));
+                      }
                       provider.bleService.startScan();
                       setState(() => _isScanning = true);
                     }
@@ -281,23 +298,77 @@ class _BluetoothDiscoverySheetState extends State<BluetoothDiscoverySheet> {
 
           // Discovered Peers List
           Expanded(
-            child: _peers.isEmpty
+            child: _isBluetoothDisabled
                 ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_isScanning)
-                          const CupertinoActivityIndicator(radius: 14)
-                        else
-                          Icon(CupertinoIcons.bluetooth, size: 48, color: Colors.grey.withValues(alpha: 0.4)),
-                        const SizedBox(height: 12),
-                        Text(
-                          _isScanning ? 'Scanning for nearby BLE devices...' : 'No Bluetooth peers found yet',
-                          style: const TextStyle(color: Colors.grey),
-                        ),
-                      ],
+                    child: Padding(
+                      padding: const EdgeInsets.all(24.0),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(18),
+                            decoration: BoxDecoration(
+                              color: Colors.amber.withValues(alpha: 0.12),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(CupertinoIcons.bluetooth, size: 48, color: Colors.amber),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'Bluetooth is Turned Off',
+                            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Turn on Bluetooth to discover nearby peers and exchange offline mesh messages.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 13, color: Colors.grey),
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            onPressed: () async {
+                              final ok = await provider.bleService.turnOn();
+                              if (!ok && context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Please enable Bluetooth in your device Settings.'),
+                                    duration: Duration(seconds: 3),
+                                  ),
+                                );
+                              }
+                              await Future.delayed(const Duration(milliseconds: 500));
+                              provider.bleService.startScan();
+                            },
+                            icon: const Icon(CupertinoIcons.power),
+                            label: const Text('Turn On Bluetooth'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: TelegramTheme.primaryBlue,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   )
+                : _peers.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_isScanning)
+                              const CupertinoActivityIndicator(radius: 14)
+                            else
+                              Icon(CupertinoIcons.bluetooth, size: 48, color: Colors.grey.withValues(alpha: 0.4)),
+                            const SizedBox(height: 12),
+                            Text(
+                              _isScanning ? 'Scanning for nearby BLE devices...' : 'No Bluetooth peers found yet',
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      )
                 : ListView.separated(
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     itemCount: _peers.length,
