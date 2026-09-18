@@ -110,9 +110,7 @@ class BleReassembler {
   final Map<int, DateTime> _timestamps = {};
   Timer? _cleanupTimer;
 
-  BleReassembler() {
-    _cleanupTimer = Timer.periodic(const Duration(seconds: 30), (_) => _cleanupStale());
-  }
+  BleReassembler();
 
   /// Adds a packet. If all chunks for messageId are received, returns the complete packet with merged payload.
   BlePacket? addPacket(BlePacket packet) {
@@ -120,6 +118,8 @@ class BleReassembler {
     if (packet.totalChunks <= 1) {
       return packet;
     }
+
+    _cleanupTimer ??= Timer.periodic(const Duration(seconds: 30), (_) => _cleanupStale());
 
     final id = packet.messageId;
     _timestamps[id] = DateTime.now();
@@ -149,6 +149,11 @@ class BleReassembler {
       _timestamps.remove(id);
       final type = _packetTypes.remove(id) ?? packet.packetType;
 
+      if (_buffers.isEmpty) {
+        _cleanupTimer?.cancel();
+        _cleanupTimer = null;
+      }
+
       return BlePacket(
         packetType: type,
         messageId: id,
@@ -172,10 +177,16 @@ class BleReassembler {
       }
       return false;
     });
+
+    if (_buffers.isEmpty) {
+      _cleanupTimer?.cancel();
+      _cleanupTimer = null;
+    }
   }
 
   void dispose() {
     _cleanupTimer?.cancel();
+    _cleanupTimer = null;
     _buffers.clear();
     _expectedTotals.clear();
     _timestamps.clear();

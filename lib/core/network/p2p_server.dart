@@ -1076,6 +1076,28 @@ class P2pServer {
       final ephemeralSec = msg['ephemeralSeconds'] as int?;
       final expAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
 
+      final msgTypeStr = msg['msgType'] as String?;
+      var msgType = MessageType.values.firstWhere(
+        (e) => e.name == msgTypeStr,
+        orElse: () => MessageType.text,
+      );
+      if (msgType == MessageType.text &&
+          (content.startsWith('{"latitude"') || content.startsWith('{"latitude":')) &&
+          LocationData.tryParse(content) != null) {
+        msgType = MessageType.location;
+      }
+
+      final voiceDuration = (msg['voiceDuration'] as num?)?.toDouble();
+      final amplitudes = (msg['amplitudes'] as List<dynamic>?)
+          ?.map((e) => (e as num).toDouble())
+          .toList();
+      final fileMeta = msg['fileMetadata'] != null
+          ? FileMetadata.fromJson(msg['fileMetadata'] as Map<String, dynamic>)
+          : null;
+      final replyToId = msg['replyToId'] as String?;
+      final replyToText = msg['replyToText'] as String?;
+      final replyToSenderName = msg['replyToSenderName'] as String?;
+
       final chatMsg = ChatMessage(
         id: messageId,
         chatId: groupId,
@@ -1083,11 +1105,17 @@ class P2pServer {
         senderName: senderName,
         recipientId: groupId,
         content: content,
-        type: MessageType.text,
+        type: msgType,
         timestamp: timestamp,
         status: MessageStatus.delivered,
         isGroup: true,
         groupId: groupId,
+        voiceDurationSeconds: voiceDuration,
+        waveformAmplitudes: amplitudes,
+        fileMetadata: fileMeta,
+        replyToId: replyToId,
+        replyToText: replyToText,
+        replyToSenderName: replyToSenderName,
         ephemeralDurationSeconds: ephemeralSec,
         expiresAt: expAt,
       );

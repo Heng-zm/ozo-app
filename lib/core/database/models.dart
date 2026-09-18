@@ -446,7 +446,13 @@ class ChatMessage {
 
   bool get isVoice => type == MessageType.voice;
   bool get isSticker => type == MessageType.sticker;
-  bool get isLocation => type == MessageType.location;
+  bool get isLocation {
+    if (type == MessageType.location) return true;
+    if (content.startsWith('{"latitude"') || content.startsWith('{"latitude":')) {
+      return LocationData.tryParse(content) != null;
+    }
+    return false;
+  }
   bool get isEphemeral => ephemeralDurationSeconds != null && ephemeralDurationSeconds! > 0;
   bool get isExpired => expiresAt != null && DateTime.now().isAfter(expiresAt!);
 

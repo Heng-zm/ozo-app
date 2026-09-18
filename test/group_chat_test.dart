@@ -137,6 +137,59 @@ void main() {
         message: hostReceivedMsg,
       );
       expect(relaySent, isTrue);
+
+      // 6. Test Group Location Message Relay & Detection
+      final locCompleter = Completer<ChatMessage>();
+      hostServer.onGroupMessage = (msg, gId) {
+        if (!locCompleter.isCompleted) {
+          locCompleter.complete(msg);
+        }
+      };
+
+      const locPayload = '{"latitude":37.7891,"longitude":-122.4014,"name":"Coffee & Coworking","address":"Downtown Workspace"}';
+      final bobLocationMsg = ChatMessage(
+        id: 'msg-grp-loc-1',
+        chatId: group.id,
+        senderId: 'member-bob',
+        senderName: 'Bob (Member)',
+        recipientId: group.id,
+        content: locPayload,
+        type: MessageType.location,
+        timestamp: DateTime.now(),
+        isGroup: true,
+        groupId: group.id,
+      );
+
+      final locSent = await memberClient.sendGroupMessage(
+        hostPeer: hostPeer,
+        group: group,
+        message: bobLocationMsg,
+      );
+      expect(locSent, isTrue);
+
+      final hostReceivedLoc = await locCompleter.future.timeout(const Duration(seconds: 5));
+      expect(hostReceivedLoc.id, equals('msg-grp-loc-1'));
+      expect(hostReceivedLoc.type, equals(MessageType.location));
+      expect(hostReceivedLoc.isLocation, isTrue);
+
+      final memberRelayCompleter = Completer<ChatMessage>();
+      memberServer.onGroupMessage = (msg, gId) {
+        if (!memberRelayCompleter.isCompleted) {
+          memberRelayCompleter.complete(msg);
+        }
+      };
+
+      final hostRelayLocSent = await hostClient.relayGroupMessage(
+        memberPeer: bobPeer,
+        group: group,
+        message: hostReceivedLoc,
+      );
+      expect(hostRelayLocSent, isTrue);
+
+      final memberReceivedLoc = await memberRelayCompleter.future.timeout(const Duration(seconds: 5));
+      expect(memberReceivedLoc.id, equals('msg-grp-loc-1'));
+      expect(memberReceivedLoc.type, equals(MessageType.location));
+      expect(memberReceivedLoc.isLocation, isTrue);
     } finally {
       await hostDb.close();
       await memberDb.close();
@@ -153,3 +206,4 @@ void main() {
     }
   });
 }
+
