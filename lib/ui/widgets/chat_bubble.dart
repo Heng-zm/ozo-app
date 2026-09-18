@@ -10,6 +10,8 @@ import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
 import 'media_gallery_viewer.dart';
 import 'voice_note_player.dart';
+import 'video_player_viewer.dart';
+import 'pdf_viewer_screen.dart';
 import '../../core/utils/map_launcher.dart';
 
 class ChatBubble extends StatelessWidget {
@@ -387,12 +389,45 @@ class ChatBubble extends StatelessWidget {
 
     final sizeStr = _formatBytes(meta.fileSize);
 
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return InkWell(
+      onTap: () {
+        if (isCompleted && meta.localPath != null && File(meta.localPath!).existsSync()) {
+          final ext = meta.fileName.split('.').last.toLowerCase();
+          if (['mp4', 'mov', 'mkv', 'm4v'].contains(ext)) {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => VideoPlayerViewer(
+                  videoPath: meta.localPath!,
+                  title: meta.fileName,
+                ),
+              ),
+            );
+          } else if (ext == 'pdf') {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => PdfViewerScreen(
+                  filePath: meta.localPath!,
+                  title: meta.fileName,
+                ),
+              ),
+            );
+          } else if (['png', 'jpg', 'jpeg', 'webp', 'gif'].contains(ext)) {
+            MediaGalleryViewer.show(
+              context,
+              imageFile: File(meta.localPath!),
+              fileName: meta.fileName,
+              subtitle: sizeStr,
+            );
+          }
+        }
+      },
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
             children: [
               Container(
                 width: 44,
@@ -493,8 +528,9 @@ class ChatBubble extends StatelessWidget {
           ],
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildImageAttachmentCard(BuildContext context, FileMetadata meta) {
     final activeTransfer = context.select<ChatProvider, FileTransferInfo?>(

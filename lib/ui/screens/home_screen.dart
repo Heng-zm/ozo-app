@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -17,11 +18,46 @@ import '../widgets/group_create_dialog.dart';
 import '../widgets/linked_devices_dialog.dart';
 import '../widgets/peer_list_tile.dart';
 import '../widgets/remote_connection_dialog.dart';
+import 'package:flutter/cupertino.dart';
+import '../widgets/bluetooth_discovery_sheet.dart';
+import '../widgets/in_app_notification_banner.dart';
 import '../widgets/security_settings_dialog.dart';
 import '../widgets/transfer_queue_sheet.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  StreamSubscription<InAppNotificationItem>? _notifSub;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = context.read<ChatProvider>();
+      _notifSub = provider.inAppNotificationStream.listen((item) {
+        if (!mounted) return;
+        InAppNotificationBanner.show(
+          context,
+          title: item.title,
+          message: item.message,
+          icon: item.icon,
+          iconColor: item.iconColor,
+          duration: item.duration,
+        );
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _notifSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -822,11 +858,25 @@ class HomeScreen extends StatelessWidget {
                 );
               },
             ),
+            IconButton(
+              icon: Icon(
+                CupertinoIcons.bluetooth,
+                size: 20,
+                color: provider.selectedBlePeer != null
+                    ? TelegramTheme.primaryBlue
+                    : null,
+              ),
+              tooltip: 'Bluetooth Offline Mesh',
+              onPressed: () => BluetoothDiscoverySheet.show(context),
+            ),
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert_rounded, size: 20),
               tooltip: 'More Features',
               onSelected: (val) {
                 switch (val) {
+                  case 'bluetooth':
+                    BluetoothDiscoverySheet.show(context);
+                    break;
                   case 'hotspot':
                     showDialog(
                       context: context,
@@ -860,6 +910,16 @@ class HomeScreen extends StatelessWidget {
                 }
               },
               itemBuilder: (ctx) => [
+                const PopupMenuItem(
+                  value: 'bluetooth',
+                  child: Row(
+                    children: [
+                      Icon(CupertinoIcons.bluetooth, size: 18, color: Color(0xFF007AFF)),
+                      SizedBox(width: 10),
+                      Text('Bluetooth Offline Mesh'),
+                    ],
+                  ),
+                ),
                 const PopupMenuItem(
                   value: 'hotspot',
                   child: Row(

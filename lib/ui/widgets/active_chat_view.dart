@@ -13,6 +13,8 @@ import 'call_screen.dart';
 import 'chat_bubble.dart';
 import 'safety_number_dialog.dart';
 import 'sticker_picker_sheet.dart';
+import '../../core/bluetooth/bluetooth_walkie_talkie.dart';
+import 'bluetooth_discovery_sheet.dart';
 
 class ActiveChatView extends StatefulWidget {
   final Peer? peer;
@@ -274,6 +276,26 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 ),
               ),
             ],
+          ),
+          IconButton(
+            tooltip: 'Bluetooth Walkie-Talkie (PTT)',
+            icon: StreamBuilder<WalkieTalkieState>(
+              stream: provider.walkieTalkie.stateStream,
+              initialData: provider.walkieTalkie.state,
+              builder: (ctx, snap) {
+                final state = snap.data ?? WalkieTalkieState.idle;
+                return Icon(
+                  state == WalkieTalkieState.idle
+                      ? Icons.radio_rounded
+                      : Icons.record_voice_over_rounded,
+                  color: state != WalkieTalkieState.idle
+                      ? Colors.redAccent
+                      : null,
+                  size: 22,
+                );
+              },
+            ),
+            onPressed: () => BluetoothDiscoverySheet.show(context),
           ),
           if (!isGroup) ...[
             IconButton(

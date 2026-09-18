@@ -589,7 +589,8 @@ class P2pServer {
 
       final savedFile = File(p.join(uploadDir.path, fileName));
       final sink = savedFile.openWrite();
-      await request.pipe(sink);
+      await sink.addStream(request);
+      await sink.close();
 
       final fileSize = await savedFile.length();
 

@@ -17,9 +17,17 @@ import '../core/database/models.dart';
 import '../core/dsa/lru_cache.dart';
 import '../core/network/discovery_service.dart';
 import '../core/network/p2p_client.dart';
+import 'package:flutter/material.dart' show Color, Icons;
 import '../core/network/p2p_server.dart';
 import '../core/security/security_service.dart';
 import '../core/transfers/file_transfer_manager.dart';
+import '../core/bluetooth/ble_constants.dart';
+import '../core/bluetooth/ble_packet.dart';
+import '../core/bluetooth/ble_service.dart';
+import '../core/bluetooth/bluetooth_walkie_talkie.dart';
+import '../core/bluetooth/bluetooth_hotspot_service.dart';
+import '../core/notifications/notification_service.dart';
+import '../ui/widgets/in_app_notification_banner.dart';
 
 /// Central provider orchestrating discovery, messaging, encryption, groups, and transfers
 class ChatProvider extends ChangeNotifier {
@@ -42,6 +50,23 @@ class ChatProvider extends ChangeNotifier {
   String _platform = 'unknown';
   int _serverPort = AppConstants.defaultP2pPort;
   bool _isInitialized = false;
+
+  // Bluetooth Low Energy & Notifications
+  final BleService bleService = BleService();
+  final BluetoothWalkieTalkie walkieTalkie = BluetoothWalkieTalkie();
+  final BluetoothHotspotService hotspotService = BluetoothHotspotService();
+  final NotificationService notificationService = NotificationService();
+
+  final StreamController<InAppNotificationItem> _inAppNotificationController =
+      StreamController<InAppNotificationItem>.broadcast();
+  Stream<InAppNotificationItem> get inAppNotificationStream => _inAppNotificationController.stream;
+
+  BlePeer? _selectedBlePeer;
+  BlePeer? get selectedBlePeer => _selectedBlePeer;
+  void setSelectedBlePeer(BlePeer? peer) {
+    _selectedBlePeer = peer;
+    notifyListeners();
+  }
 
   // Selected chat target
   Peer? _activePeer;
@@ -395,6 +420,17 @@ class ChatProvider extends ChangeNotifier {
     // Start 1-second background sweeper for ephemeral message destruction & file shredding
     _ephemeralSweeperTimer?.cancel();
     _ephemeralSweeperTimer = Timer.periodic(const Duration(seconds: 1), (_) => _sweepExpiredMessages());
+
+    // 8. Initialize Bluetooth Low Energy & Notifications
+    try {
+      await notificationService.init();
+      await bleService.init();
+      walkieTalkie.init(bleService);
+      hotspotService.init(bleService);
+      bleService.onPacketReceived.listen(_handleIncomingBlePacket);
+    } catch (e) {
+      debugPrint('[ChatProvider] Bluetooth/Notification init warning: $e');
+    }
 
     _isInitialized = true;
     notifyListeners();
@@ -1093,6 +1129,98 @@ class ChatProvider extends ChangeNotifier {
     server.sendTypingIndicator(_activePeer!.id, isTyping);
   }
 
+  void _dispatchNotification({
+    required String title,
+    required String body,
+    required String chatId,
+  }) {
+    try {
+      // OS Local notification for background / lockscreen
+      notificationService.showNotification(
+        id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        title: title,
+        body: body,
+        payload: chatId,
+      );
+
+      // In-app Dynamic Island / pill banner
+      _inAppNotificationController.add(
+        InAppNotificationItem(
+          title: title,
+          message: body,
+          icon: chatId == 'ble_chat'
+              ? Icons.bluetooth_audio_rounded
+              : Icons.chat_bubble_rounded,
+          iconColor: chatId == 'ble_chat'
+              ? const Color(0xFF007AFF)
+              : const Color(0xFF34C759),
+        ),
+      );
+    } catch (e) {
+      debugPrint('[ChatProvider] _dispatchNotification error: $e');
+    }
+  }
+
+  void _handleIncomingBlePacket(BlePacket packet) {
+    if (packet.packetType == BleConstants.packetTypeChat) {
+      try {
+        final jsonStr = utf8.decode(packet.payload);
+        final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+        final text = map['text'] as String? ?? '';
+        final sender = map['sender'] as String? ?? 'Nearby Bluetooth Peer';
+        final senderId = 'ble_peer';
+
+        final msg = ChatMessage(
+          id: 'ble_${packet.messageId}_${DateTime.now().millisecondsSinceEpoch}',
+          chatId: 'ble_chat',
+          senderId: senderId,
+          senderName: sender,
+          recipientId: _deviceId,
+          content: text,
+          type: MessageType.text,
+          timestamp: DateTime.now(),
+          status: MessageStatus.delivered,
+        );
+
+        database.saveMessage(msg);
+        notifyListeners();
+
+        _dispatchNotification(
+          title: '📶 BLE: $sender',
+          body: text,
+          chatId: 'ble_chat',
+        );
+      } catch (e) {
+        debugPrint('[ChatProvider] _handleIncomingBlePacket error: $e');
+      }
+    }
+  }
+
+  Future<bool> sendBleChatMessage(BlePeer peer, String text) async {
+    if (peer.device == null) return false;
+    final success = await bleService.sendOfflineChatMessage(
+      peer.device!,
+      text,
+      senderName: _deviceName,
+    );
+    if (success) {
+      final msg = ChatMessage(
+        id: 'ble_${DateTime.now().millisecondsSinceEpoch}',
+        chatId: 'ble_chat',
+        senderId: _deviceId,
+        senderName: _deviceName,
+        recipientId: peer.id,
+        content: text,
+        type: MessageType.text,
+        timestamp: DateTime.now(),
+        status: MessageStatus.delivered,
+      );
+      await database.saveMessage(msg);
+      notifyListeners();
+    }
+    return success;
+  }
+
   void _handleIncomingMessage(ChatMessage message) {
     // 1. Exact O(1) recent packet deduplication (0% false positives, self-evicting, never saturates)
     if (_recentMessageIdCache.containsKey(message.id)) {
@@ -1112,6 +1240,12 @@ class ChatProvider extends ChangeNotifier {
       message.status = MessageStatus.read;
       client.sendReadReceipt(_activePeer!, message.id);
       server.sendReadReceipt(_activePeer!.id, message.id);
+    } else {
+      _dispatchNotification(
+        title: message.senderName,
+        body: message.type == MessageType.voice ? '🎤 Voice message' : message.content,
+        chatId: message.chatId,
+      );
     }
     database.saveMessage(message);
     notifyListeners();
@@ -1145,11 +1279,23 @@ class ChatProvider extends ChangeNotifier {
     );
 
     database.saveMessage(msg);
+    if (_activePeer?.id != sender.id) {
+      _dispatchNotification(
+        title: sender.name,
+        body: isImg ? '📷 Sent a photo' : '📁 Sent a file: ${fileMeta.fileName}',
+        chatId: sender.id,
+      );
+    }
     notifyListeners();
   }
 
   void _handleIncomingGroupInvite(GroupChat group) {
     database.saveGroup(group);
+    _dispatchNotification(
+      title: 'Group Invitation',
+      body: 'Invited to join group "${group.name}"',
+      chatId: group.id,
+    );
     notifyListeners();
   }
 
@@ -1171,6 +1317,13 @@ class ChatProvider extends ChangeNotifier {
     _recentMessageIdCache.put(msg.id, true);
 
     database.saveMessage(msg);
+    if (_activeGroup?.id != groupId && msg.senderId != _deviceId) {
+      _dispatchNotification(
+        title: '${group.name} • ${msg.senderName}',
+        body: msg.content,
+        chatId: groupId,
+      );
+    }
     notifyListeners();
 
     // If I am host, relay to other members
