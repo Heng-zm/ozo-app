@@ -10,6 +10,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   group('LruCache<K, V> Data Structure Tests', () {
     test('O(1) capacity enforcement and eviction order', () {
       final evictedKeys = <String>[];
@@ -242,6 +246,7 @@ void main() {
 
     test('ChatProvider uses Bounded LRU Cache for exact 0% false-positive deduplication', () async {
       final provider = ChatProvider();
+      addTearDown(() => provider.dispose());
 
       final incomingMsg = ChatMessage(
         id: 'relay_packet_exact_123',

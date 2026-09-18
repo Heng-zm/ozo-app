@@ -98,9 +98,25 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>OZO requires permission to save received photos and videos to your photo library.</string>
 
+	<!-- Bluetooth Offline Mesh & Walkie-Talkie (BLE) -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>OZO requires Bluetooth access to discover nearby offline peers, exchange mesh messages, and stream Walkie-Talkie voice without Wi-Fi.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>OZO requires Bluetooth peripheral mode to advertise your node to nearby devices for offline mesh chat.</string>
+
 	<!-- App Lock & Biometrics -->
 	<key>NSFaceIDUsageDescription</key>
 	<string>OZO uses Face ID to securely unlock your app and safeguard your private messages.</string>
+
+	<!-- Background Modes for BLE Mesh, PTT Audio, and Notifications -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+		<string>fetch</string>
+		<string>remote-notification</string>
+	</array>
 
 	<!-- Document & File Sharing (Files App Integration) -->
 	<key>UIFileSharingEnabled</key>

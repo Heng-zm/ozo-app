@@ -40,6 +40,10 @@
 	<string>OZO requires access to your photo library to select photos to share with peers.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OZO requires access to the local network to discover peers, exchange encrypted messages, and transfer files.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>OZO requires Bluetooth access to discover nearby offline peers and exchange messages without Wi-Fi.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>OZO requires Bluetooth peripheral mode to advertise your node to nearby devices.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
