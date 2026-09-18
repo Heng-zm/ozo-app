@@ -70,6 +70,9 @@ jobs:
       - name: Enable Windows Desktop
         run: flutter config --enable-windows-desktop
       - name: Build Windows
+        env:
+          CL: "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
+          _CL_: "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
         run: flutter build windows --release
       - name: Package Windows Bundle
         shell: pwsh
