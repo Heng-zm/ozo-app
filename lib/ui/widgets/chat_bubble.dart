@@ -56,8 +56,8 @@ class ChatBubble extends StatelessWidget {
             },
             onSecondaryTap: () => _showMessageOptions(context, context.read<ChatProvider>()),
             onDoubleTap: () {
-              HapticFeedback.lightImpact();
-              context.read<ChatProvider>().setReplyingTo(message);
+              HapticFeedback.mediumImpact();
+              context.read<ChatProvider>().toggleReaction(message.id, '❤️');
             },
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),

@@ -747,11 +747,14 @@ class _HomeScreenState extends State<HomeScreen> {
     ChatProvider provider,
     bool isDark,
   ) {
+    final activeTransfersCount = provider.transferManager.activeTransfers.length;
+    final onlinePeersCount = provider.database.knownPeers.values.where((p) => p.isOnline).length;
+
     return ClipRect(
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
             color: isDark ? const Color(0xCC17212B) : Colors.white.withValues(alpha: 0.85),
             border: Border(
@@ -763,233 +766,296 @@ class _HomeScreenState extends State<HomeScreen> {
           child: SafeArea(
             bottom: false,
             child: Row(
-          children: [
-            GestureDetector(
-              onTap: () {
-                showDialog(
-                  context: context,
-                  builder: (_) => const AccountDialog(),
-                );
-              },
-              child: Tooltip(
-                message: 'Account Profiles & Login',
-                child: CircleAvatar(
-                  radius: 17,
-                  backgroundColor: TelegramTheme.primaryBlue,
-                  child: Text(
-                    provider.currentAccount?.avatarEmoji ?? '👤',
-                    style: const TextStyle(fontSize: 16),
+              children: [
+                GestureDetector(
+                  onTap: () {
+                    showDialog(
+                      context: context,
+                      builder: (_) => const AccountDialog(),
+                    );
+                  },
+                  child: Stack(
+                    children: [
+                      CircleAvatar(
+                        radius: 19,
+                        backgroundColor: TelegramTheme.primaryBlue,
+                        child: Text(
+                          provider.currentAccount?.avatarEmoji ?? '👤',
+                          style: const TextStyle(fontSize: 18),
+                        ),
+                      ),
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF00C853),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isDark ? const Color(0xFF17212B) : Colors.white,
+                              width: 1.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: GestureDetector(
-                onTap: () {
-                  showDialog(
-                    context: context,
-                    builder: (_) => const AccountDialog(),
-                  );
-                },
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      provider.currentAccount?.displayName ?? provider.deviceName,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () {
+                      showDialog(
+                        context: context,
+                        builder: (_) => const AccountDialog(),
+                      );
+                    },
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          provider.currentAccount?.displayName ?? provider.deviceName,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          onlinePeersCount > 0
+                              ? '$onlinePeersCount peer${onlinePeersCount == 1 ? '' : 's'} online'
+                              : 'Offline / Scanning',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: onlinePeersCount > 0 ? const Color(0xFF00C853) : Colors.grey,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
                     ),
-                    Text(
-                      '@${provider.currentAccount?.username ?? 'user'}',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: TelegramTheme.primaryBlue,
-                        fontWeight: FontWeight.w600,
+                  ),
+                ),
+                // Compose '+' popup menu
+                PopupMenuButton<String>(
+                  icon: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: TelegramTheme.primaryBlue.withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.add_rounded, size: 20, color: TelegramTheme.primaryBlue),
+                  ),
+                  tooltip: 'New Chat / Connect',
+                  onSelected: (val) {
+                    switch (val) {
+                      case 'group':
+                        showDialog(
+                          context: context,
+                          builder: (_) => const GroupCreateDialog(),
+                        );
+                        break;
+                      case 'remote':
+                        showDialog(
+                          context: context,
+                          builder: (_) => const RemoteConnectionDialog(),
+                        );
+                        break;
+                      case 'hotspot':
+                        showDialog(
+                          context: context,
+                          builder: (_) => const DirectHotspotDialog(),
+                        );
+                        break;
+                      case 'rescan':
+                        provider.discoveryService.broadcastBeacon();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Broadcast sent to 255.255.255.255 and subnets'),
+                            duration: Duration(seconds: 1),
+                          ),
+                        );
+                        break;
+                    }
+                  },
+                  itemBuilder: (ctx) => [
+                    const PopupMenuItem(
+                      value: 'group',
+                      child: Row(
+                        children: [
+                          Icon(Icons.group_add_outlined, size: 18, color: TelegramTheme.primaryBlue),
+                          SizedBox(width: 10),
+                          Text('New Group Chat'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'remote',
+                      child: Row(
+                        children: [
+                          Icon(Icons.cloud_sync_outlined, size: 18, color: TelegramTheme.primaryBlue),
+                          SizedBox(width: 10),
+                          Text('Remote P2P / Cloudflare'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'hotspot',
+                      child: Row(
+                        children: [
+                          Icon(Icons.wifi_tethering_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                          SizedBox(width: 10),
+                          Text('Direct Hotspot Mode'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'rescan',
+                      child: Row(
+                        children: [
+                          Icon(Icons.refresh_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                          SizedBox(width: 10),
+                          Text('Rescan LAN Beacons'),
+                        ],
                       ),
                     ),
                   ],
                 ),
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.cloud_sync_outlined, size: 20),
-              tooltip: 'Remote P2P / Cloudflare',
-              onPressed: () {
-                showDialog(
-                  context: context,
-                  builder: (_) => const RemoteConnectionDialog(),
-                );
-              },
-            ),
-            IconButton(
-              icon: Badge(
-                isLabelVisible: provider.transferManager.activeTransfers.isNotEmpty,
-                label: Text('${provider.transferManager.activeTransfers.length}'),
-                child: const Icon(Icons.swap_vert_rounded, size: 20),
-              ),
-              tooltip: 'Transfer Manager',
-              onPressed: () => TransferQueueSheet.show(context),
-            ),
-            IconButton(
-              icon: const Icon(Icons.group_add_outlined, size: 20),
-              tooltip: 'New Group Chat',
-              onPressed: () {
-                showDialog(
-                  context: context,
-                  builder: (_) => const GroupCreateDialog(),
-                );
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.refresh_rounded, size: 20),
-              tooltip: 'Rescan LAN',
-              onPressed: () {
-                provider.discoveryService.broadcastBeacon();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Broadcast sent to 255.255.255.255 and subnets'),
-                    duration: Duration(seconds: 1),
+                const SizedBox(width: 4),
+                // Hub '...' popup menu
+                PopupMenuButton<String>(
+                  icon: Badge(
+                    isLabelVisible: activeTransfersCount > 0,
+                    label: Text('$activeTransfersCount'),
+                    child: const Icon(Icons.more_vert_rounded, size: 20),
                   ),
-                );
-              },
-            ),
-            IconButton(
-              icon: Icon(
-                CupertinoIcons.bluetooth,
-                size: 20,
-                color: provider.selectedBlePeer != null
-                    ? TelegramTheme.primaryBlue
-                    : null,
-              ),
-              tooltip: 'Bluetooth Offline Mesh',
-              onPressed: () => BluetoothDiscoverySheet.show(context),
-            ),
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert_rounded, size: 20),
-              tooltip: 'More Features',
-              onSelected: (val) {
-                switch (val) {
-                  case 'bluetooth':
-                    BluetoothDiscoverySheet.show(context);
-                    break;
-                  case 'hotspot':
-                    showDialog(
-                      context: context,
-                      builder: (_) => const DirectHotspotDialog(),
-                    );
-                    break;
-                  case 'linked':
-                    showDialog(
-                      context: context,
-                      builder: (_) => const LinkedDevicesDialog(),
-                    );
-                    break;
-                  case 'backup':
-                    showDialog(
-                      context: context,
-                      builder: (_) => const BackupDialog(),
-                    );
-                    break;
-                  case 'security':
-                    showDialog(
-                      context: context,
-                      builder: (_) => const SecuritySettingsDialog(),
-                    );
-                    break;
-                  case 'lock':
-                    provider.security.lock();
-                    break;
-                  case 'settings':
-                    _showSettingsDialog(context, provider);
-                    break;
-                }
-              },
-              itemBuilder: (ctx) => [
-                const PopupMenuItem(
-                  value: 'bluetooth',
-                  child: Row(
-                    children: [
-                      Icon(CupertinoIcons.bluetooth, size: 18, color: Color(0xFF007AFF)),
-                      SizedBox(width: 10),
-                      Text('Bluetooth Offline Mesh'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'hotspot',
-                  child: Row(
-                    children: [
-                      Icon(Icons.wifi_tethering_rounded, size: 18, color: TelegramTheme.primaryBlue),
-                      SizedBox(width: 10),
-                      Text('Direct Hotspot Mode'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'linked',
-                  child: Row(
-                    children: [
-                      Icon(Icons.devices_rounded, size: 18, color: TelegramTheme.primaryBlue),
-                      SizedBox(width: 10),
-                      Text('Linked Devices'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'backup',
-                  child: Row(
-                    children: [
-                      Icon(Icons.security_update_good_rounded, size: 18, color: TelegramTheme.primaryBlue),
-                      SizedBox(width: 10),
-                      Text('Encrypted Backup & Vault'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'security',
-                  child: Row(
-                    children: [
-                      Icon(Icons.lock_outline_rounded, size: 18, color: TelegramTheme.primaryBlue),
-                      SizedBox(width: 10),
-                      Text('Passcode & Security'),
-                    ],
-                  ),
-                ),
-                if (provider.security.isPinConfigured)
-                  const PopupMenuItem(
-                    value: 'lock',
-                    child: Row(
-                      children: [
-                        Icon(Icons.lock_rounded, size: 18, color: Colors.orange),
-                        SizedBox(width: 10),
-                        Text('Lock App Now'),
-                      ],
+                  tooltip: 'Hub & Settings',
+                  onSelected: (val) {
+                    switch (val) {
+                      case 'transfers':
+                        TransferQueueSheet.show(context);
+                        break;
+                      case 'bluetooth':
+                        BluetoothDiscoverySheet.show(context);
+                        break;
+                      case 'linked':
+                        showDialog(
+                          context: context,
+                          builder: (_) => const LinkedDevicesDialog(),
+                        );
+                        break;
+                      case 'backup':
+                        showDialog(
+                          context: context,
+                          builder: (_) => const BackupDialog(),
+                        );
+                        break;
+                      case 'security':
+                        showDialog(
+                          context: context,
+                          builder: (_) => const SecuritySettingsDialog(),
+                        );
+                        break;
+                      case 'lock':
+                        provider.security.lock();
+                        break;
+                      case 'settings':
+                        _showSettingsDialog(context, provider);
+                        break;
+                    }
+                  },
+                  itemBuilder: (ctx) => [
+                    PopupMenuItem(
+                      value: 'transfers',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.swap_vert_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                          const SizedBox(width: 10),
+                          Text(activeTransfersCount > 0
+                              ? 'Transfers ($activeTransfersCount active)'
+                              : 'Transfer Manager'),
+                        ],
+                      ),
                     ),
-                  ),
-                const PopupMenuDivider(),
-                const PopupMenuItem(
-                  value: 'settings',
-                  child: Row(
-                    children: [
-                      Icon(Icons.settings_outlined, size: 18),
-                      SizedBox(width: 10),
-                      Text('Device Settings'),
-                    ],
-                  ),
+                    PopupMenuItem(
+                      value: 'bluetooth',
+                      child: Row(
+                        children: [
+                          Icon(
+                            CupertinoIcons.bluetooth,
+                            size: 18,
+                            color: provider.selectedBlePeer != null
+                                ? TelegramTheme.primaryBlue
+                                : const Color(0xFF007AFF),
+                          ),
+                          const SizedBox(width: 10),
+                          const Text('Bluetooth Offline Mesh'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'linked',
+                      child: Row(
+                        children: [
+                          Icon(Icons.devices_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                          SizedBox(width: 10),
+                          Text('Linked Devices'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'backup',
+                      child: Row(
+                        children: [
+                          Icon(Icons.security_update_good_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                          SizedBox(width: 10),
+                          Text('Encrypted Backup & Vault'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'security',
+                      child: Row(
+                        children: [
+                          Icon(Icons.lock_outline_rounded, size: 18, color: TelegramTheme.primaryBlue),
+                          SizedBox(width: 10),
+                          Text('Passcode & Security'),
+                        ],
+                      ),
+                    ),
+                    if (provider.security.isPinConfigured)
+                      const PopupMenuItem(
+                        value: 'lock',
+                        child: Row(
+                          children: [
+                            Icon(Icons.lock_rounded, size: 18, color: Colors.orange),
+                            SizedBox(width: 10),
+                            Text('Lock App Now'),
+                          ],
+                        ),
+                      ),
+                    const PopupMenuDivider(),
+                    const PopupMenuItem(
+                      value: 'settings',
+                      child: Row(
+                        children: [
+                          Icon(Icons.settings_outlined, size: 18),
+                          SizedBox(width: 10),
+                          Text('Device Settings'),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
+          ),
         ),
       ),
-    )),
-  );
-}
+    );
+  }
 
   Widget _buildBottomNodeInfo(
     BuildContext context,
