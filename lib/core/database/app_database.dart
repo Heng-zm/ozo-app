@@ -25,6 +25,7 @@ class AppDatabase {
 
   final List<ChatMessage> _messages = [];
   final Map<String, int> _messageIndexById = {};
+  final Map<String, List<ChatMessage>> _messagesByChatId = {};
   final LruCache<String, ChatMessage> _messageLruCache = LruCache(capacity: 1000);
   final BloomFilter _messageBloomFilter = BloomFilter(capacity: 25000, falsePositiveRate: 0.01);
   final PrefixTrie<Peer> _peerTrie = PrefixTrie<Peer>();
@@ -550,12 +551,14 @@ class AppDatabase {
     final rows = await _db!.query('messages', orderBy: 'timestamp ASC');
     _messages.clear();
     _messageIndexById.clear();
+    _messagesByChatId.clear();
     _messageLruCache.clear();
     _messageBloomFilter.reset();
     for (final row in rows) {
       final msg = _rowToChatMessage(row);
       _messageIndexById[msg.id] = _messages.length;
       _messages.add(msg);
+      _messagesByChatId.putIfAbsent(msg.chatId, () => []).add(msg);
       _messageLruCache.put(msg.id, msg);
       _messageBloomFilter.add(msg.id);
     }
@@ -658,6 +661,14 @@ class AppDatabase {
       _messages.add(message);
     }
 
+    final chatList = _messagesByChatId.putIfAbsent(message.chatId, () => []);
+    final cIdx = chatList.indexWhere((m) => m.id == message.id);
+    if (cIdx != -1) {
+      chatList[cIdx] = message;
+    } else {
+      chatList.add(message);
+    }
+
     if (_db != null) {
       final row = _chatMessageToRow(message);
       await _db!.insert('messages', row, conflictAlgorithm: sqflite.ConflictAlgorithm.replace);
@@ -697,6 +708,11 @@ class AppDatabase {
       final updated = _messages[idx].copyWith(status: status);
       _messages[idx] = updated;
       _messageLruCache.put(messageId, updated);
+      final chatList = _messagesByChatId[updated.chatId];
+      if (chatList != null) {
+        final cIdx = chatList.indexWhere((m) => m.id == messageId);
+        if (cIdx != -1) chatList[cIdx] = updated;
+      }
     }
 
     if (_db != null) {
@@ -722,6 +738,10 @@ class AppDatabase {
   }
 
   Future<void> deleteMessage(String messageId) async {
+    final existing = getMessageById(messageId);
+    if (existing != null) {
+      _messagesByChatId[existing.chatId]?.removeWhere((m) => m.id == messageId);
+    }
     _messageLruCache.remove(messageId);
     _messageIndexById.remove(messageId);
     _messages.removeWhere((m) => m.id == messageId);
@@ -745,6 +765,11 @@ class AppDatabase {
       final updated = _messages[idx].copyWith(reactions: reactions);
       _messages[idx] = updated;
       _messageLruCache.put(messageId, updated);
+      final chatList = _messagesByChatId[updated.chatId];
+      if (chatList != null) {
+        final cIdx = chatList.indexWhere((m) => m.id == messageId);
+        if (cIdx != -1) chatList[cIdx] = updated;
+      }
       if (_db != null) {
         await _db!.update(
           'messages',
@@ -756,9 +781,9 @@ class AppDatabase {
     }
   }
 
+  /// Instant O(1) retrieval of messages for a chat without scanning or re-sorting all messages
   List<ChatMessage> getMessagesForChat(String chatId) {
-    return _messages.where((m) => m.chatId == chatId).toList()
-      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return _messagesByChatId[chatId] ?? const [];
   }
 
   /// Paginated message loading for large chats (e.g. 100,000+ messages)

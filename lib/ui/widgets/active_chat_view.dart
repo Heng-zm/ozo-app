@@ -330,6 +330,7 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                         )
                       : ListView.builder(
                           controller: _scrollController,
+                          cacheExtent: 500,
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           itemCount: messages.length,
                           itemBuilder: (context, index) {
@@ -338,18 +339,22 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                             final showDateBadge = index == 0 ||
                                 !_isSameDay(msg.timestamp, messages[index - 1].timestamp);
 
-                            return Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (showDateBadge)
-                                  _buildDateBadge(msg.timestamp, isDark),
-                                ChatBubble(
-                                  message: msg,
-                                  isOutgoing: isOutgoing,
-                                  onQuotedMessageTap: (quotedId) =>
-                                      _jumpToMessage(quotedId, messages),
-                                ),
-                              ],
+                            return RepaintBoundary(
+                              key: ValueKey('bubble_${msg.id}'),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (showDateBadge)
+                                    _buildDateBadge(msg.timestamp, isDark),
+                                  ChatBubble(
+                                    key: ValueKey(msg.id),
+                                    message: msg,
+                                    isOutgoing: isOutgoing,
+                                    onQuotedMessageTap: (quotedId) =>
+                                        _jumpToMessage(quotedId, messages),
+                                  ),
+                                ],
+                              ),
                             );
                           },
                         ),

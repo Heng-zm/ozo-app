@@ -23,14 +23,14 @@ class VoiceNotePlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final provider = context.watch<ChatProvider>();
-    final isPlaying = provider.isMessagePlaying(message.id);
-    final isCurrent = provider.playingMessageId == message.id;
+    final isCurrent = context.select<ChatProvider, bool>((p) => p.playingMessageId == message.id);
+    final isPlaying = isCurrent && context.select<ChatProvider, bool>((p) => p.isMessagePlaying(message.id));
+    final currentPosition = isCurrent ? context.select<ChatProvider, Duration>((p) => p.playbackPosition) : Duration.zero;
+    final playbackSpeed = isCurrent ? context.select<ChatProvider, double>((p) => p.playbackSpeed) : 1.0;
 
     final totalDuration = Duration(
       milliseconds: ((message.voiceDurationSeconds ?? 0.0) * 1000).toInt(),
     );
-    final currentPosition = isCurrent ? provider.playbackPosition : Duration.zero;
 
     final hasLocalFile = message.fileMetadata?.isCompleted == true &&
         message.fileMetadata?.localPath != null;
@@ -56,6 +56,7 @@ class VoiceNotePlayer extends StatelessWidget {
           // Play / Pause / Download button
           GestureDetector(
             onTap: () {
+              final provider = context.read<ChatProvider>();
               if (!hasLocalFile) {
                 provider.acceptIncomingFile(message);
               } else if (isPlaying) {
@@ -96,11 +97,11 @@ class VoiceNotePlayer extends StatelessWidget {
                       behavior: HitTestBehavior.opaque,
                       onTapDown: (details) {
                         if (!hasLocalFile) return;
-                        _handleSeek(details.localPosition, width, totalDuration, provider);
+                        _handleSeek(details.localPosition, width, totalDuration, context.read<ChatProvider>());
                       },
                       onHorizontalDragUpdate: (details) {
                         if (!hasLocalFile) return;
-                        _handleSeek(details.localPosition, width, totalDuration, provider);
+                        _handleSeek(details.localPosition, width, totalDuration, context.read<ChatProvider>());
                       },
                       child: SizedBox(
                         height: 28,
@@ -135,7 +136,7 @@ class VoiceNotePlayer extends StatelessWidget {
                     ),
                     if (hasLocalFile)
                       GestureDetector(
-                        onTap: () => provider.togglePlaybackSpeed(),
+                        onTap: () => context.read<ChatProvider>().togglePlaybackSpeed(),
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                           decoration: BoxDecoration(
@@ -143,7 +144,7 @@ class VoiceNotePlayer extends StatelessWidget {
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Text(
-                            '${provider.playbackSpeed == 1.0 ? '1' : provider.playbackSpeed}x',
+                            '${playbackSpeed == 1.0 ? '1' : playbackSpeed}x',
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.bold,

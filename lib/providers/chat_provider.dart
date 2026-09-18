@@ -317,9 +317,14 @@ class ChatProvider extends ChangeNotifier {
       _playerState = state;
       notifyListeners();
     });
+    DateTime lastPositionNotify = DateTime.fromMillisecondsSinceEpoch(0);
     _audioPlayer.onPositionChanged.listen((pos) {
       _playbackPosition = pos;
-      notifyListeners();
+      final now = DateTime.now();
+      if (now.difference(lastPositionNotify).inMilliseconds >= 100) {
+        lastPositionNotify = now;
+        notifyListeners();
+      }
     });
     _audioPlayer.onDurationChanged.listen((dur) {
       _playbackTotal = dur;
@@ -1124,13 +1129,18 @@ class ChatProvider extends ChangeNotifier {
 
   void _handleTyping(String peerId, bool isTyping) {
     _typingTimers[peerId]?.cancel();
+    final changed = _typingPeers[peerId] != isTyping;
     _typingPeers[peerId] = isTyping;
-    notifyListeners();
+    if (changed) {
+      notifyListeners();
+    }
 
     if (isTyping) {
       _typingTimers[peerId] = Timer(const Duration(seconds: 4), () {
-        _typingPeers[peerId] = false;
-        notifyListeners();
+        if (_typingPeers[peerId] == true) {
+          _typingPeers[peerId] = false;
+          notifyListeners();
+        }
       });
     }
   }

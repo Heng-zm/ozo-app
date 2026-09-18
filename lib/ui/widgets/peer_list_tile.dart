@@ -69,7 +69,7 @@ class _PeerListTileState extends State<PeerListTile> {
                     right: 0,
                     bottom: 0,
                     child: isOnline
-                        ? _PulsingOnlineDot(isDark: isDark)
+                        ? RepaintBoundary(child: _PulsingOnlineDot(isDark: isDark))
                         : Container(
                             width: 13,
                             height: 13,

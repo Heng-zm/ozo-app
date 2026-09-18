@@ -27,12 +27,7 @@ class ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final timeStr = DateFormat('HH:mm').format(message.timestamp);
-    ChatProvider? chatProvider;
-    try {
-      chatProvider = context.watch<ChatProvider>();
-    } catch (_) {
-      chatProvider = null;
-    }
+    final myDeviceId = context.select<ChatProvider, String>((p) => p.deviceId);
 
     final bubbleBg = isOutgoing
         ? (isDark ? TelegramTheme.darkOutgoingBubble : TelegramTheme.lightOutgoingBubble)
@@ -44,7 +39,7 @@ class ChatBubble extends StatelessWidget {
 
     return _SwipeToReply(
       isOutgoing: isOutgoing,
-      onReply: () => chatProvider?.setReplyingTo(message),
+      onReply: () => context.read<ChatProvider>().setReplyingTo(message),
       child: Align(
         alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
         child: ConstrainedBox(
@@ -54,12 +49,12 @@ class ChatBubble extends StatelessWidget {
           child: GestureDetector(
             onLongPress: () {
               HapticFeedback.mediumImpact();
-              _showMessageOptions(context, chatProvider);
+              _showMessageOptions(context, context.read<ChatProvider>());
             },
-            onSecondaryTap: () => _showMessageOptions(context, chatProvider),
+            onSecondaryTap: () => _showMessageOptions(context, context.read<ChatProvider>()),
             onDoubleTap: () {
               HapticFeedback.lightImpact();
-              chatProvider?.setReplyingTo(message);
+              context.read<ChatProvider>().setReplyingTo(message);
             },
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
@@ -225,10 +220,9 @@ class ChatBubble extends StatelessWidget {
                       children: message.reactions.entries.map((entry) {
                         final emoji = entry.key;
                         final userIds = entry.value;
-                        final count = userIds.length;
-                        final hasReacted = chatProvider != null && userIds.contains(chatProvider.deviceId);
+                        final hasReacted = userIds.contains(myDeviceId);
                         return GestureDetector(
-                          onTap: () => chatProvider?.toggleReaction(message.id, emoji),
+                          onTap: () => context.read<ChatProvider>().toggleReaction(message.id, emoji),
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                             decoration: BoxDecoration(
@@ -370,8 +364,9 @@ class ChatBubble extends StatelessWidget {
   }
 
   Widget _buildFileAttachmentCard(BuildContext context, FileMetadata meta) {
-    final chatProvider = context.watch<ChatProvider>();
-    final activeTransfer = chatProvider.transferManager.getTransfer(meta.transferId);
+    final activeTransfer = context.select<ChatProvider, FileTransferInfo?>(
+      (p) => p.transferManager.getTransfer(meta.transferId),
+    );
 
     final isDownloading = activeTransfer != null &&
         activeTransfer.status == TransferStatus.transferring;
@@ -442,14 +437,15 @@ class ChatBubble extends StatelessWidget {
                     size: 28,
                   ),
                   onPressed: () {
+                    final provider = context.read<ChatProvider>();
                     if (isDownloading) {
-                      chatProvider.transferManager.pauseTransfer(meta.transferId);
+                      provider.transferManager.pauseTransfer(meta.transferId);
                     } else if (isPaused) {
-                      chatProvider.transferManager.resumeTransfer(meta.transferId);
+                      provider.transferManager.resumeTransfer(meta.transferId);
                     } else if (activeTransfer?.status == TransferStatus.failed) {
-                      chatProvider.transferManager.retryTransfer(meta.transferId);
+                      provider.transferManager.retryTransfer(meta.transferId);
                     } else {
-                      chatProvider.acceptIncomingFile(message);
+                      provider.acceptIncomingFile(message);
                     }
                   },
                 ),
@@ -491,8 +487,9 @@ class ChatBubble extends StatelessWidget {
   }
 
   Widget _buildImageAttachmentCard(BuildContext context, FileMetadata meta) {
-    final chatProvider = context.watch<ChatProvider>();
-    final activeTransfer = chatProvider.transferManager.getTransfer(meta.transferId);
+    final activeTransfer = context.select<ChatProvider, FileTransferInfo?>(
+      (p) => p.transferManager.getTransfer(meta.transferId),
+    );
 
     final isDownloading = activeTransfer != null &&
         activeTransfer.status == TransferStatus.transferring;
@@ -524,6 +521,7 @@ class ChatBubble extends StatelessWidget {
                   file,
                   fit: BoxFit.cover,
                   width: double.infinity,
+                  cacheWidth: 600,
                   errorBuilder: (context, error, stackTrace) =>
                       _buildFileAttachmentCard(context, meta),
                 ),
@@ -604,7 +602,7 @@ class ChatBubble extends StatelessWidget {
                     color: TelegramTheme.primaryBlue,
                     size: 26,
                   ),
-                  onPressed: () => chatProvider.acceptIncomingFile(message),
+                  onPressed: () => context.read<ChatProvider>().acceptIncomingFile(message),
                 ),
             ],
           ),
