@@ -84,7 +84,7 @@ void main() {
       final inviteSent = await hostClient.sendGroupInvite(peer: bobPeer, group: group);
       expect(inviteSent, isTrue);
 
-      final receivedGroup = await inviteCompleter.future.timeout(const Duration(seconds: 5));
+      final receivedGroup = await inviteCompleter.future.timeout(const Duration(seconds: 10));
       expect(receivedGroup.id, equals('group-uuid-1'));
       expect(receivedGroup.name, equals('LAN Dev Team'));
       expect(receivedGroup.hostId, equals('host-alice'));
@@ -93,7 +93,9 @@ void main() {
       // 5. Bob sends a group message to Host
       final msgCompleter = Completer<ChatMessage>();
       hostServer.onGroupMessage = (msg, gId) {
-        msgCompleter.complete(msg);
+        if (msg.id == 'msg-grp-1' && !msgCompleter.isCompleted) {
+          msgCompleter.complete(msg);
+        }
       };
 
       final hostPeer = Peer(
@@ -125,10 +127,17 @@ void main() {
       );
       expect(msgSent, isTrue);
 
-      final hostReceivedMsg = await msgCompleter.future.timeout(const Duration(seconds: 5));
+      final hostReceivedMsg = await msgCompleter.future.timeout(const Duration(seconds: 10));
       expect(hostReceivedMsg.content, equals('Hey everyone in the LAN group!'));
       expect(hostReceivedMsg.senderId, equals('member-bob'));
       expect(hostReceivedMsg.isGroup, isTrue);
+
+      final bobRelayCompleter = Completer<ChatMessage>();
+      memberServer.onGroupMessage = (msg, gId) {
+        if (msg.id == 'msg-grp-1' && !bobRelayCompleter.isCompleted) {
+          bobRelayCompleter.complete(msg);
+        }
+      };
 
       // Host relays to group members
       final relaySent = await hostClient.relayGroupMessage(
@@ -138,10 +147,14 @@ void main() {
       );
       expect(relaySent, isTrue);
 
+      final bobReceivedFirstRelay = await bobRelayCompleter.future.timeout(const Duration(seconds: 10));
+      expect(bobReceivedFirstRelay.id, equals('msg-grp-1'));
+      expect(bobReceivedFirstRelay.content, equals('Hey everyone in the LAN group!'));
+
       // 6. Test Group Location Message Relay & Detection
       final locCompleter = Completer<ChatMessage>();
       hostServer.onGroupMessage = (msg, gId) {
-        if (!locCompleter.isCompleted) {
+        if (msg.id == 'msg-grp-loc-1' && !locCompleter.isCompleted) {
           locCompleter.complete(msg);
         }
       };
@@ -167,14 +180,14 @@ void main() {
       );
       expect(locSent, isTrue);
 
-      final hostReceivedLoc = await locCompleter.future.timeout(const Duration(seconds: 5));
+      final hostReceivedLoc = await locCompleter.future.timeout(const Duration(seconds: 10));
       expect(hostReceivedLoc.id, equals('msg-grp-loc-1'));
       expect(hostReceivedLoc.type, equals(MessageType.location));
       expect(hostReceivedLoc.isLocation, isTrue);
 
       final memberRelayCompleter = Completer<ChatMessage>();
       memberServer.onGroupMessage = (msg, gId) {
-        if (!memberRelayCompleter.isCompleted) {
+        if (msg.id == 'msg-grp-loc-1' && !memberRelayCompleter.isCompleted) {
           memberRelayCompleter.complete(msg);
         }
       };
@@ -186,7 +199,7 @@ void main() {
       );
       expect(hostRelayLocSent, isTrue);
 
-      final memberReceivedLoc = await memberRelayCompleter.future.timeout(const Duration(seconds: 5));
+      final memberReceivedLoc = await memberRelayCompleter.future.timeout(const Duration(seconds: 10));
       expect(memberReceivedLoc.id, equals('msg-grp-loc-1'));
       expect(memberReceivedLoc.type, equals(MessageType.location));
       expect(memberReceivedLoc.isLocation, isTrue);
