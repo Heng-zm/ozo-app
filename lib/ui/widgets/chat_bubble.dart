@@ -220,6 +220,7 @@ class ChatBubble extends StatelessWidget {
                       children: message.reactions.entries.map((entry) {
                         final emoji = entry.key;
                         final userIds = entry.value;
+                        final count = userIds.length;
                         final hasReacted = userIds.contains(myDeviceId);
                         return GestureDetector(
                           onTap: () => context.read<ChatProvider>().toggleReaction(message.id, emoji),

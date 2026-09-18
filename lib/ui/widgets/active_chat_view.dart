@@ -330,7 +330,6 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                         )
                       : ListView.builder(
                           controller: _scrollController,
-                          cacheExtent: 500,
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           itemCount: messages.length,
                           itemBuilder: (context, index) {
