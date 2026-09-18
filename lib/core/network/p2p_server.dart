@@ -29,6 +29,12 @@ class P2pServer {
   int _actualPort = 0;
   DateTime? _startedAt;
 
+  // Real-time server diagnostics & performance metrics
+  int _totalRequestsCount = 0;
+  int _totalMessagesReceived = 0;
+  int _totalBytesSent = 0;
+  int _totalBytesReceived = 0;
+
   // Active WebSocket connections: peerId -> WebSocket
   final Map<String, WebSocket> _activeSockets = {};
   // All opened WebSockets (including pre-auth)
@@ -57,6 +63,27 @@ class P2pServer {
   int get port => _actualPort;
 
   DateTime? get startedAt => _startedAt;
+
+  Duration get uptime =>
+      _startedAt != null ? DateTime.now().difference(_startedAt!) : Duration.zero;
+
+  String get uptimeFormatted {
+    final d = uptime;
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60);
+    final s = d.inSeconds.remainder(60);
+    if (h > 0) return '${h}h ${m}m ${s}s';
+    if (m > 0) return '${m}m ${s}s';
+    return '${s}s';
+  }
+
+  int get activeConnectionCount => _activeSockets.length;
+  int get totalOpenSockets => _openWebSockets.length;
+  int get sharedFilesCount => _sharedFiles.length;
+  int get totalRequestsCount => _totalRequestsCount;
+  int get totalMessagesReceived => _totalMessagesReceived;
+  int get totalBytesSent => _totalBytesSent;
+  int get totalBytesReceived => _totalBytesReceived;
 
   /// Returns the active open WebSocket for a peer if connected
   WebSocket? getActiveSocket(String peerId) {
@@ -87,23 +114,60 @@ class P2pServer {
     required this.cryptoService,
   });
 
-  /// Starts the embedded HTTP & WebSocket server
+  /// Starts the embedded HTTP & WebSocket server with robust binding and fallback
   Future<int> start() async {
     await stop();
 
+    HttpServer? boundServer;
+
+    // 1. Attempt requested port with shared socket capability
     try {
-      _server = await HttpServer.bind(
+      boundServer = await HttpServer.bind(
         InternetAddress.anyIPv4,
         requestedPort,
+        shared: true,
       );
     } catch (_) {
-      // If requested port is taken, bind to dynamic port
-      _server = await HttpServer.bind(
-        InternetAddress.anyIPv4,
-        0,
-      );
+      // 2. Sequential fallback attempts for predictable LAN clustering
+      for (int offset = 1; offset <= 4; offset++) {
+        try {
+          boundServer = await HttpServer.bind(
+            InternetAddress.anyIPv4,
+            requestedPort + offset,
+            shared: true,
+          );
+          break;
+        } catch (_) {}
+      }
     }
 
+    // 3. Dynamic IPv4 fallback
+    if (boundServer == null) {
+      try {
+        boundServer = await HttpServer.bind(
+          InternetAddress.anyIPv4,
+          0,
+          shared: true,
+        );
+      } catch (_) {
+        // 4. Dual-stack / IPv6 fallback if IPv4 stack is restricted
+        try {
+          boundServer = await HttpServer.bind(
+            InternetAddress.anyIPv6,
+            requestedPort,
+            shared: true,
+          );
+        } catch (_) {
+          boundServer = await HttpServer.bind(
+            InternetAddress.anyIPv6,
+            0,
+            shared: true,
+          );
+        }
+      }
+    }
+
+    _server = boundServer;
     _actualPort = _server!.port;
     _startedAt = DateTime.now();
     _server!.listen(_handleHttpRequest);
@@ -120,6 +184,8 @@ class P2pServer {
   }
 
   Future<void> _handleHttpRequest(HttpRequest request) async {
+    _totalRequestsCount++;
+
     // Add CORS headers for flexibility
     request.response.headers.add('Access-Control-Allow-Origin', '*');
     request.response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -132,6 +198,27 @@ class P2pServer {
     }
 
     final path = request.uri.path;
+
+    // Favicon handler to avoid 404 logs in browsers
+    if (path == '/favicon.ico') {
+      request.response.statusCode = HttpStatus.noContent;
+      await request.response.close();
+      return;
+    }
+
+    // Fast Ping / Latency Check API
+    if (path == '/api/ping') {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'pong': true,
+        'app': 'OZO',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'port': _actualPort,
+        'uptimeSeconds': uptime.inSeconds,
+      }));
+      await request.response.close();
+      return;
+    }
 
     // WebSocket upgrade for real-time E2EE communication
     if (path == '/ws') {
@@ -156,9 +243,7 @@ class P2pServer {
 
     // Node Information API
     if (path == '/api/info') {
-      final uptime = _startedAt != null
-          ? DateTime.now().difference(_startedAt!).inSeconds
-          : 0;
+      final uptimeSec = uptime.inSeconds;
       request.response.headers.contentType = ContentType.json;
       request.response.write(jsonEncode({
         'app': 'OZO',
@@ -170,13 +255,20 @@ class P2pServer {
         'safetyFingerprint': safetyFingerprint,
         'status': 'online',
         'port': _actualPort,
-        'uptimeSeconds': uptime,
+        'uptimeSeconds': uptimeSec,
+        'uptime': uptimeFormatted,
+        'activeConnections': _activeSockets.length,
+        'sharedFilesCount': _sharedFiles.length,
+        'activePeers': _activeSockets.keys.toList(),
+        'platform': Platform.operatingSystem,
         'endpoints': {
           'web': '/',
           'ws': '/ws',
+          'ping': '/api/ping',
           'info': '/api/info',
           'connect': '/api/connect',
           'health': '/api/health',
+          'files': '/api/files',
           'download': '/api/file/download/:transferId',
         }
       }));
@@ -288,16 +380,52 @@ class P2pServer {
 
     // Health Check Endpoint
     if (path == '/api/health') {
-      final uptime = _startedAt != null
-          ? DateTime.now().difference(_startedAt!).inSeconds
-          : 0;
+      final uptimeSec = uptime.inSeconds;
       request.response.headers.contentType = ContentType.json;
       request.response.write(jsonEncode({
         'status': 'healthy',
         'app': 'OZO',
-        'activeConnections': _activeSockets.length,
-        'uptimeSeconds': uptime,
+        'version': '1.1.0',
+        'protocol': AppConstants.protocolVersion,
         'serverPort': _actualPort,
+        'uptimeSeconds': uptimeSec,
+        'uptime': uptimeFormatted,
+        'activeConnections': _activeSockets.length,
+        'totalOpenSockets': _openWebSockets.length,
+        'sharedFilesCount': _sharedFiles.length,
+        'totalRequests': _totalRequestsCount,
+        'totalMessages': _totalMessagesReceived,
+        'totalBytesSent': _totalBytesSent,
+        'totalBytesReceived': _totalBytesReceived,
+        'platform': Platform.operatingSystem,
+      }));
+      await request.response.close();
+      return;
+    }
+
+    // List Available Shared Files API
+    if (path == '/api/files') {
+      final fileList = <Map<String, dynamic>>[];
+      for (final entry in _sharedFiles.entries) {
+        final transferId = entry.key;
+        final file = entry.value;
+        final exists = await file.exists();
+        final length = exists ? await file.length() : 0;
+        final fileName = file.uri.pathSegments.isNotEmpty
+            ? file.uri.pathSegments.last
+            : 'file';
+        fileList.add({
+          'transferId': transferId,
+          'fileName': fileName,
+          'fileSize': length,
+          'downloadUrl': '/api/file/download/$transferId',
+        });
+      }
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'success': true,
+        'count': fileList.length,
+        'files': fileList,
       }));
       await request.response.close();
       return;
@@ -314,16 +442,62 @@ class P2pServer {
     await request.response.close();
   }
 
+  ContentType _resolveContentType(String path) {
+    final dotIndex = path.lastIndexOf('.');
+    if (dotIndex == -1) return ContentType.binary;
+    final ext = path.substring(dotIndex + 1).toLowerCase();
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return ContentType('image', 'jpeg');
+      case 'png':
+        return ContentType('image', 'png');
+      case 'gif':
+        return ContentType('image', 'gif');
+      case 'webp':
+        return ContentType('image', 'webp');
+      case 'svg':
+        return ContentType('image', 'svg+xml');
+      case 'mp4':
+        return ContentType('video', 'mp4');
+      case 'webm':
+        return ContentType('video', 'webm');
+      case 'mp3':
+        return ContentType('audio', 'mpeg');
+      case 'm4a':
+      case 'aac':
+        return ContentType('audio', 'aac');
+      case 'wav':
+        return ContentType('audio', 'wav');
+      case 'ogg':
+      case 'opus':
+        return ContentType('audio', 'ogg');
+      case 'pdf':
+        return ContentType('application', 'pdf');
+      case 'json':
+        return ContentType.json;
+      case 'txt':
+        return ContentType.text;
+      case 'zip':
+        return ContentType('application', 'zip');
+      default:
+        return ContentType.binary;
+    }
+  }
+
   Future<void> _handleFileDownload(HttpRequest request, String transferId) async {
     final file = _sharedFiles[transferId];
     if (file == null || !await file.exists()) {
       request.response.statusCode = HttpStatus.notFound;
       request.response.write('File not found or transfer expired');
-      await request.response.close();
+      try {
+        await request.response.close();
+      } catch (_) {}
       return;
     }
 
     final fileSize = await file.length();
+    final fileName = file.uri.pathSegments.isNotEmpty ? file.uri.pathSegments.last : 'file';
     final rangeHeader = request.headers.value(HttpHeaders.rangeHeader);
 
     int startByte = 0;
@@ -341,7 +515,9 @@ class P2pServer {
       if (startByte >= fileSize || endByte >= fileSize || startByte > endByte) {
         request.response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
         request.response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */$fileSize');
-        await request.response.close();
+        try {
+          await request.response.close();
+        } catch (_) {}
         return;
       }
 
@@ -353,8 +529,10 @@ class P2pServer {
 
     final contentLength = endByte - startByte + 1;
     request.response.headers.set(HttpHeaders.contentLengthHeader, contentLength.toString());
-    request.response.headers.contentType = ContentType.binary;
+    request.response.headers.contentType = _resolveContentType(file.path);
     request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+    final sanitizedFileName = fileName.replaceAll('"', '');
+    request.response.headers.set('Content-Disposition', 'inline; filename="$sanitizedFileName"');
 
     RandomAccessFile? raf;
     try {
@@ -372,12 +550,17 @@ class P2pServer {
         request.response.add(chunk);
         await request.response.flush();
         bytesRemaining -= chunk.length;
+        _totalBytesSent += chunk.length;
       }
     } catch (e) {
-      if (kDebugMode) print('Error streaming file: $e');
+      if (kDebugMode) print('[P2pServer] File stream interrupted: $e');
     } finally {
-      await raf?.close();
-      await request.response.close();
+      try {
+        await raf?.close();
+      } catch (_) {}
+      try {
+        await request.response.close();
+      } catch (_) {}
     }
   }
 
@@ -388,7 +571,19 @@ class P2pServer {
     socket.listen(
       (data) async {
         try {
+          // Payload protection: guard against excessive frame size (16MB limit)
+          if (data is String && data.length > 16 * 1024 * 1024) {
+            if (kDebugMode) print('[P2pServer] WS dropped frame: oversized text payload');
+            return;
+          } else if (data is List<int> && data.length > 16 * 1024 * 1024) {
+            if (kDebugMode) print('[P2pServer] WS dropped frame: oversized binary payload');
+            return;
+          }
+
           final text = data is String ? data : utf8.decode(data as List<int>);
+          _totalBytesReceived += text.length;
+          _totalMessagesReceived++;
+
           final msg = jsonDecode(text) as Map<String, dynamic>;
 
           final type = msg['type'] as String?;
@@ -400,6 +595,18 @@ class P2pServer {
           }
 
           switch (type) {
+            case 'PING':
+              if (socket.readyState == WebSocket.open) {
+                socket.add(jsonEncode({
+                  'type': 'PONG',
+                  'ts': DateTime.now().millisecondsSinceEpoch,
+                  'echo': msg['ts'],
+                }));
+              }
+              break;
+            case 'PONG':
+              // Keepalive acknowledged
+              break;
             case 'HANDSHAKE':
               if (socket.readyState == WebSocket.open) {
                 socket.add(jsonEncode({
@@ -499,14 +706,19 @@ class P2pServer {
         _openWebSockets.remove(socket);
         if (peerId != null) {
           _activeSockets.remove(peerId);
+        } else {
+          _activeSockets.removeWhere((k, v) => identical(v, socket));
         }
       },
       onError: (err) {
         _openWebSockets.remove(socket);
         if (peerId != null) {
           _activeSockets.remove(peerId);
+        } else {
+          _activeSockets.removeWhere((k, v) => identical(v, socket));
         }
       },
+      cancelOnError: true,
     );
   }
 
@@ -736,227 +948,350 @@ class P2pServer {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>OZO P2P • Connect to $safeName</title>
   <style>
     :root {
-      --bg: #0e1621;
-      --card: #17212b;
-      --card-border: #242f3d;
-      --primary: #2481cc;
-      --primary-hover: #1e70b3;
-      --text: #ffffff;
-      --text-dim: #7f91a4;
-      --green: #4fae4e;
-      --accent: #64b5f6;
-      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --bg: #0b0e14;
+      --card-bg: rgba(22, 27, 34, 0.75);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-border-active: rgba(88, 166, 255, 0.4);
+      --text-main: #f0f6fc;
+      --text-muted: #8b949e;
+      --accent: #2f81f7;
+      --accent-gradient: linear-gradient(135deg, #2f81f7 0%, #388bfd 100%);
+      --accent-hover: #1f6feb;
+      --green: #3fb950;
+      --green-bg: rgba(63, 185, 80, 0.15);
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      --radius: 20px;
+      --shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
     }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f4f6f8;
+        --card-bg: rgba(255, 255, 255, 0.85);
+        --card-border: rgba(0, 0, 0, 0.08);
+        --card-border-active: rgba(9, 105, 218, 0.35);
+        --text-main: #1f2328;
+        --text-muted: #656d76;
+        --accent: #0969da;
+        --accent-gradient: linear-gradient(135deg, #0969da 0%, #218bff 100%);
+        --accent-hover: #0860ca;
+        --green: #1a7f37;
+        --green-bg: rgba(31, 136, 61, 0.12);
+        --shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+      }
+    }
+    * { box-sizing: border-box; }
     body {
       margin: 0;
-      padding: 32px 16px;
+      padding: 32px 16px 48px;
       font-family: var(--font);
       background-color: var(--bg);
-      color: var(--text);
+      color: var(--text-main);
       display: flex;
       flex-direction: column;
       align-items: center;
       min-height: 100vh;
-      box-sizing: border-box;
+      -webkit-font-smoothing: antialiased;
     }
     .container {
       width: 100%;
-      max-width: 500px;
+      max-width: 480px;
       display: flex;
       flex-direction: column;
       gap: 16px;
     }
-    .card {
-      background: var(--card);
+    .glass-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
       border: 1px solid var(--card-border);
-      border-radius: 18px;
+      border-radius: var(--radius);
       padding: 24px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      box-shadow: var(--shadow);
+      transition: border-color 0.2s;
     }
     .header {
       text-align: center;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
+    }
+    .app-icon {
+      width: 58px;
+      height: 58px;
+      border-radius: 16px;
+      background: var(--accent-gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 8px 20px rgba(47, 129, 247, 0.35);
+      margin-bottom: 4px;
+    }
+    .app-icon svg { width: 32px; height: 32px; fill: #ffffff; }
+    h1 {
+      margin: 4px 0 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .sub {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin: 0;
     }
     .badge-status {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 4px 12px;
+      padding: 5px 12px;
       border-radius: 20px;
-      background: rgba(79, 174, 78, 0.15);
+      background: var(--green-bg);
       color: var(--green);
       font-size: 12px;
       font-weight: 600;
-      margin-top: 4px;
+      margin-top: 6px;
     }
     .dot {
       width: 8px;
       height: 8px;
       border-radius: 50%;
       background: var(--green);
-      box-shadow: 0 0 8px var(--green);
+      box-shadow: 0 0 10px var(--green);
+      animation: pulse 2s infinite ease-in-out;
     }
-    h1 {
-      margin: 8px 0 0 0;
-      font-size: 24px;
-      font-weight: 700;
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.2); opacity: 0.7; }
     }
-    .sub {
-      color: var(--text-dim);
+    .segmented-control {
+      display: flex;
+      background: rgba(120, 120, 128, 0.16);
+      padding: 4px;
+      border-radius: 12px;
+      gap: 4px;
+      margin-bottom: 12px;
+    }
+    .segment-btn {
+      flex: 1;
+      border: none;
+      background: transparent;
+      padding: 8px 12px;
       font-size: 13px;
-      margin: 0;
+      font-weight: 600;
+      color: var(--text-muted);
+      border-radius: 9px;
+      cursor: pointer;
+      transition: all 0.2s;
     }
+    .segment-btn.active {
+      background: var(--card-bg);
+      color: var(--text-main);
+      box-shadow: 0 3px 8px rgba(0,0,0,0.12);
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
     .info-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
       padding: 10px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      border-bottom: 1px solid var(--card-border);
       font-size: 13px;
     }
-    .info-row:last-child {
-      border-bottom: none;
-    }
-    .info-label {
-      color: var(--text-dim);
-    }
-    .info-val {
-      font-weight: 600;
-      font-family: monospace;
-      color: var(--text);
-    }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: var(--text-muted); }
+    .info-val { font-weight: 600; font-family: ui-monospace, monospace; }
     .fingerprint {
       color: var(--accent);
       font-weight: 700;
-      letter-spacing: 1px;
+      letter-spacing: 0.5px;
     }
     .qr-wrap {
       display: flex;
       justify-content: center;
       margin: 16px 0;
     }
-    .qr-img {
+    .qr-card {
       background: #ffffff;
-      padding: 12px;
-      border-radius: 14px;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+      padding: 14px;
+      border-radius: 18px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.15);
     }
     .btn {
-      display: block;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
       width: 100%;
-      padding: 14px;
+      padding: 13px;
       border-radius: 12px;
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
-      text-align: center;
       text-decoration: none;
-      box-sizing: border-box;
       border: none;
-      transition: all 0.2s;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
+    .btn:active { transform: scale(0.98); }
     .btn-primary {
-      background: var(--primary);
+      background: var(--accent-gradient);
       color: #ffffff;
+      box-shadow: 0 4px 14px rgba(47, 129, 247, 0.28);
     }
     .btn-primary:hover {
-      background: var(--primary-hover);
+      background: var(--accent-hover);
     }
     .btn-secondary {
-      background: rgba(255,255,255,0.06);
-      color: var(--text);
-      border: 1px solid var(--card-border);
+      background: rgba(120, 120, 128, 0.12);
+      color: var(--text-main);
       margin-top: 8px;
     }
     .btn-secondary:hover {
-      background: rgba(255,255,255,0.12);
+      background: rgba(120, 120, 128, 0.2);
     }
-    .api-header {
-      font-size: 14px;
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .stat-card {
+      background: rgba(120, 120, 128, 0.08);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .stat-num {
+      font-size: 18px;
       font-weight: 700;
+      color: var(--text-main);
+      font-family: ui-monospace, monospace;
+      margin-top: 4px;
+    }
+    .stat-title {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .probe-box {
+      background: rgba(120, 120, 128, 0.08);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 14px;
       margin-bottom: 10px;
       display: flex;
-      align-items: center;
-      justify-content: space-between;
+      flex-direction: column;
+      gap: 8px;
     }
-    .endpoint {
-      background: rgba(0,0,0,0.25);
-      border: 1px solid var(--card-border);
-      border-radius: 8px;
-      padding: 8px 12px;
-      font-family: monospace;
-      font-size: 12px;
-      margin-bottom: 6px;
+    .probe-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
-    .method {
-      color: var(--accent);
+    .probe-badge {
+      font-size: 12px;
+      font-weight: 600;
+      font-family: ui-monospace, monospace;
+    }
+    .endpoint-item {
+      background: rgba(120, 120, 128, 0.08);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+    }
+    .method-tag {
       font-weight: 700;
+      color: var(--accent);
       margin-right: 6px;
     }
-    .test-btn {
-      background: rgba(36, 129, 204, 0.2);
+    .action-pill {
+      background: rgba(47, 129, 247, 0.15);
       color: var(--accent);
-      border: 1px solid rgba(36, 129, 204, 0.4);
-      border-radius: 6px;
-      padding: 3px 8px;
-      font-size: 11px;
-      cursor: pointer;
-    }
-    .test-btn:hover {
-      background: rgba(36, 129, 204, 0.4);
-    }
-    pre {
-      background: #090d13;
-      padding: 12px;
+      border: 1px solid rgba(47, 129, 247, 0.3);
       border-radius: 8px;
+      padding: 4px 10px;
       font-size: 11px;
-      overflow-x: auto;
-      color: #9cdcfe;
-      margin-top: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .action-pill:hover {
+      background: rgba(47, 129, 247, 0.3);
+    }
+    pre.code-out {
+      background: #0d1117;
       border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 12px;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #7ee787;
+      overflow-x: auto;
+      max-height: 220px;
+      margin-top: 10px;
     }
     .toast {
       position: fixed;
       bottom: 24px;
-      background: #2b5278;
-      color: #fff;
+      background: rgba(30, 36, 46, 0.95);
+      color: #ffffff;
       padding: 10px 20px;
-      border-radius: 20px;
+      border-radius: 30px;
       font-size: 13px;
+      font-weight: 500;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
       display: none;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 1000;
+      border: 1px solid rgba(255,255,255,0.1);
+      animation: fadeIn 0.2s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="card header">
-      <div style="font-size: 38px;">⚡</div>
+    <div class="glass-card header">
+      <div class="app-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
+        </svg>
+      </div>
       <h1>$safeName</h1>
-      <p class="sub">End-to-End Encrypted P2P Direct Connect</p>
+      <p class="sub">OZO P2P • End-to-End Encrypted Node</p>
       <div class="badge-status">
         <span class="dot"></span> Online &amp; Listening
       </div>
     </div>
 
-    <div class="card">
+    <div class="segmented-control">
+      <button class="segment-btn active" onclick="switchTab('connect')">Connect</button>
+      <button class="segment-btn" onclick="switchTab('diagnostics')">Diagnostics</button>
+      <button class="segment-btn" onclick="switchTab('api')">API Endpoints</button>
+    </div>
+
+    <!-- TAB 1: CONNECT -->
+    <div id="tab-connect" class="tab-content active glass-card">
       <div class="info-row">
         <span class="info-label">Peer Name</span>
         <span class="info-val">$safeName</span>
       </div>
       <div class="info-row">
         <span class="info-label">Device ID</span>
-        <span class="info-val">${safeId.length > 12 ? '${safeId.substring(0, 12)}...' : safeId}</span>
+        <span class="info-val">${safeId.length > 14 ? '${safeId.substring(0, 14)}...' : safeId}</span>
       </div>
       <div class="info-row">
         <span class="info-label">Safety Fingerprint</span>
@@ -968,46 +1303,106 @@ class P2pServer {
       </div>
 
       <div class="qr-wrap">
-        <div class="qr-img">${_generateQrSvg(deepLink)}</div>
+        <div class="qr-card">${_generateQrSvg(deepLink)}</div>
       </div>
 
       <a href="$deepLink" class="btn btn-primary">📱 Open in OZO App</a>
       <button onclick="copyText('$deepLink', 'OZO connection link copied to clipboard!')" class="btn btn-secondary">📋 Copy Deep Link</button>
-      <button onclick="copyText('$webUrl', 'Public web link copied!')" class="btn btn-secondary">🌐 Copy Web Link</button>
+      <button onclick="copyText('$webUrl', 'Web URL copied to clipboard!')" class="btn btn-secondary">🌐 Copy Web Link</button>
     </div>
 
-    <div class="card">
-      <div class="api-header">
-        <span>⚡ Public REST &amp; WebSocket API</span>
-        <span style="font-size: 11px; color: var(--text-dim);">Zero-Auth Local/Public</span>
+    <!-- TAB 2: DIAGNOSTICS & PROBES -->
+    <div id="tab-diagnostics" class="tab-content glass-card">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-title">Port</div>
+          <div class="stat-num">$_actualPort</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-title">Active Sockets</div>
+          <div class="stat-num">${_activeSockets.length}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-title">Shared Files</div>
+          <div class="stat-num">${_sharedFiles.length}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-title">Uptime</div>
+          <div class="stat-num" id="uptime-val">$uptimeFormatted</div>
+        </div>
       </div>
-      <div class="endpoint">
-        <span><span class="method">GET</span> /api/info</span>
-        <button class="test-btn" onclick="callApi('/api/info')">Test Live</button>
+
+      <div class="probe-box">
+        <div class="probe-row">
+          <div>
+            <div style="font-weight: 600; font-size: 13px;">WebSocket Probe</div>
+            <div style="font-size: 11px; color: var(--text-muted);">Real-time E2EE socket ping</div>
+          </div>
+          <button id="ws-probe-btn" class="action-pill" onclick="testWsProbe('$wsUrl')">Ping WS</button>
+        </div>
+        <div id="ws-probe-result" class="probe-badge" style="color: var(--text-muted); font-size: 11px;">Ready to test</div>
       </div>
-      <div class="endpoint">
-        <span><span class="method">GET</span> /api/connect</span>
-        <button class="test-btn" onclick="callApi('/api/connect')">Test Live</button>
+
+      <div class="probe-box">
+        <div class="probe-row">
+          <div>
+            <div style="font-weight: 600; font-size: 13px;">HTTP Health Check</div>
+            <div style="font-size: 11px; color: var(--text-muted);">REST server latency test</div>
+          </div>
+          <button id="http-probe-btn" class="action-pill" onclick="testHttpProbe()">Ping HTTP</button>
+        </div>
+        <div id="http-probe-result" class="probe-badge" style="color: var(--text-muted); font-size: 11px;">Ready to test</div>
       </div>
-      <div class="endpoint">
-        <span><span class="method">GET</span> /api/health</span>
-        <button class="test-btn" onclick="callApi('/api/health')">Test Live</button>
+    </div>
+
+    <!-- TAB 3: REST & WS API -->
+    <div id="tab-api" class="tab-content glass-card">
+      <div style="font-size: 13px; font-weight: 700; margin-bottom: 12px;">Node REST Endpoints</div>
+
+      <div class="endpoint-item">
+        <span><span class="method-tag">GET</span> /api/ping</span>
+        <button class="action-pill" onclick="callApi('/api/ping')">Execute</button>
       </div>
-      <div class="endpoint">
-        <span><span class="method">POST</span> /api/connect</span>
-        <span style="font-size: 11px; color: var(--text-dim);">Announce &amp; Register</span>
+
+      <div class="endpoint-item">
+        <span><span class="method-tag">GET</span> /api/info</span>
+        <button class="action-pill" onclick="callApi('/api/info')">Execute</button>
       </div>
-      <div class="endpoint">
-        <span><span class="method">WS</span> $wsUrl</span>
-        <span style="font-size: 11px; color: var(--text-dim);">E2EE Chat Socket</span>
+
+      <div class="endpoint-item">
+        <span><span class="method-tag">GET</span> /api/health</span>
+        <button class="action-pill" onclick="callApi('/api/health')">Execute</button>
       </div>
-      <pre id="api-output" style="display:none;"></pre>
+
+      <div class="endpoint-item">
+        <span><span class="method-tag">GET</span> /api/files</span>
+        <button class="action-pill" onclick="callApi('/api/files')">Execute</button>
+      </div>
+
+      <div class="endpoint-item">
+        <span><span class="method-tag">GET</span> /api/connect</span>
+        <button class="action-pill" onclick="callApi('/api/connect')">Execute</button>
+      </div>
+
+      <div class="endpoint-item">
+        <span><span class="method-tag">WS</span> /ws</span>
+        <span style="font-size: 11px; color: var(--text-muted);">Full-Duplex</span>
+      </div>
+
+      <pre id="api-output" class="code-out" style="display:none;"></pre>
     </div>
   </div>
 
   <div id="toast" class="toast"></div>
 
   <script>
+    function switchTab(tabId) {
+      document.querySelectorAll('.segment-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+      event.target.classList.add('active');
+      document.getElementById('tab-' + tabId).classList.add('active');
+    }
+
     async function callApi(path) {
       const out = document.getElementById('api-output');
       out.style.display = 'block';
@@ -1020,14 +1415,65 @@ class P2pServer {
         out.textContent = 'Error: ' + e;
       }
     }
+
+    async function testHttpProbe() {
+      const btn = document.getElementById('http-probe-btn');
+      const resEl = document.getElementById('http-probe-result');
+      btn.disabled = true;
+      resEl.textContent = 'Testing...';
+      const start = performance.now();
+      try {
+        const res = await fetch('/api/ping');
+        const elapsed = (performance.now() - start).toFixed(1);
+        if (res.ok) {
+          resEl.innerHTML = '<span style="color:var(--green)">● HTTP 200 OK</span> (' + elapsed + ' ms)';
+        } else {
+          resEl.innerHTML = '<span style="color:#ff7b72">HTTP ' + res.status + '</span> (' + elapsed + ' ms)';
+        }
+      } catch (e) {
+        resEl.innerHTML = '<span style="color:#ff7b72">Failed: ' + e + '</span>';
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function testWsProbe(wsUrl) {
+      const btn = document.getElementById('ws-probe-btn');
+      const resEl = document.getElementById('ws-probe-result');
+      btn.disabled = true;
+      resEl.textContent = 'Connecting WebSocket...';
+      const start = performance.now();
+      let socket;
+      try {
+        socket = new WebSocket(wsUrl);
+        socket.onopen = function() {
+          socket.send(JSON.stringify({ type: 'PING', ts: Date.now() }));
+        };
+        socket.onmessage = function(event) {
+          const elapsed = (performance.now() - start).toFixed(1);
+          resEl.innerHTML = '<span style="color:var(--green)">● WebSocket Connected</span> (' + elapsed + ' ms RTT)';
+          socket.close();
+          btn.disabled = false;
+        };
+        socket.onerror = function(err) {
+          resEl.innerHTML = '<span style="color:#ff7b72">Connection error</span>';
+          btn.disabled = false;
+        };
+      } catch (e) {
+        resEl.innerHTML = '<span style="color:#ff7b72">Exception: ' + e + '</span>';
+        btn.disabled = false;
+      }
+    }
+
     function copyText(text, msg) {
       navigator.clipboard.writeText(text).then(() => showToast(msg)).catch(() => prompt('Copy:', text));
     }
+
     function showToast(msg) {
       const t = document.getElementById('toast');
       t.textContent = msg;
       t.style.display = 'block';
-      setTimeout(() => { t.style.display = 'none'; }, 2500);
+      setTimeout(() => { t.style.display = 'none'; }, 2400);
     }
   </script>
 </body>
