@@ -391,7 +391,7 @@ class ChatMessage {
   final MessageType type;
   final DateTime timestamp;
   MessageStatus status;
-  final FileMetadata? fileMetadata;
+  FileMetadata? fileMetadata;
   final bool isGroup;
   final String? groupId;
   final double? voiceDurationSeconds;

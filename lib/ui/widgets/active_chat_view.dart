@@ -550,12 +550,15 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                   const SizedBox(width: 4),
                   // Stop & Send button
                   Container(
+                    width: 34,
+                    height: 34,
                     decoration: const BoxDecoration(
                       color: TelegramTheme.primaryBlue,
                       shape: BoxShape.circle,
                     ),
                     child: IconButton(
-                      icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 20),
                       tooltip: 'Send Voice Note',
                       onPressed: () {
                         HapticFeedback.lightImpact();
@@ -578,11 +581,11 @@ class _ActiveChatViewState extends State<ActiveChatView> {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: BoxDecoration(
             color: isDark
-                ? const Color(0xCC17212B)
-                : Colors.white.withValues(alpha: 0.88),
+                ? const Color(0xD0121212)
+                : Colors.white.withValues(alpha: 0.92),
             border: Border(
               top: BorderSide(
-                color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05),
+                color: isDark ? IosTheme.hairlineDark : IosTheme.hairlineLight,
                 width: 0.5,
               ),
             ),
@@ -596,8 +599,8 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                   IconButton(
                     visualDensity: VisualDensity.compact,
                     padding: const EdgeInsets.all(6),
-                    icon: const Icon(Icons.attach_file_rounded),
-                    color: Colors.grey.shade600,
+                    icon: const Icon(Icons.add_circle_outline_rounded),
+                    color: TelegramTheme.primaryBlue,
                     tooltip: 'Send File / Media',
                     onPressed: () {
                       HapticFeedback.selectionClick();
@@ -608,8 +611,8 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                   IconButton(
                     visualDensity: VisualDensity.compact,
                     padding: const EdgeInsets.all(6),
-                    icon: const Icon(Icons.camera_alt_rounded),
-                    color: Colors.grey.shade600,
+                    icon: const Icon(Icons.camera_alt_outlined),
+                    color: IosTheme.systemGray,
                     tooltip: 'Take / Pick Photo',
                     onPressed: isReadOnly
                         ? null
@@ -621,8 +624,8 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 IconButton(
                   visualDensity: VisualDensity.compact,
                   padding: const EdgeInsets.all(6),
-                  icon: const Icon(Icons.location_on_rounded),
-                  color: Colors.grey.shade600,
+                  icon: const Icon(Icons.location_on_outlined),
+                  color: IosTheme.systemGray,
                   tooltip: 'Share Location',
                   onPressed: isReadOnly
                       ? null
@@ -634,8 +637,8 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 IconButton(
                   visualDensity: VisualDensity.compact,
                   padding: const EdgeInsets.all(6),
-                  icon: const Icon(Icons.sticky_note_2_outlined),
-                  color: Colors.grey.shade600,
+                  icon: const Icon(Icons.emoji_emotions_outlined),
+                  color: IosTheme.systemGray,
                   tooltip: 'Stickers',
                   onPressed: isReadOnly
                       ? null
@@ -650,37 +653,45 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                     enabled: !isReadOnly,
                     minLines: 1,
                     maxLines: 4,
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: isDark ? Colors.white : Colors.black,
+                    ),
                     decoration: InputDecoration(
                       hintText: isReadOnly
                           ? 'Group is read-only (host offline)...'
-                          : 'Write a message...',
-                      hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 14),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          : 'Message',
+                      hintStyle: const TextStyle(
+                        color: IosTheme.systemGray,
+                        fontSize: 15,
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      isDense: true,
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
+                        borderRadius: BorderRadius.circular(20),
                         borderSide: BorderSide(
-                          color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.08),
-                          width: 0.8,
+                          color: isDark ? Colors.white12 : Colors.black.withValues(alpha: 0.1),
+                          width: 0.5,
                         ),
                       ),
                       enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
+                        borderRadius: BorderRadius.circular(20),
                         borderSide: BorderSide(
-                          color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.08),
-                          width: 0.8,
+                          color: isDark ? Colors.white12 : Colors.black.withValues(alpha: 0.1),
+                          width: 0.5,
                         ),
                       ),
                       focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
+                        borderRadius: BorderRadius.circular(20),
                         borderSide: const BorderSide(
                           color: TelegramTheme.primaryBlue,
-                          width: 1.2,
+                          width: 1.0,
                         ),
                       ),
                       filled: true,
                       fillColor: isDark
-                          ? TelegramTheme.darkBackground
-                          : Colors.grey.shade100,
+                          ? IosTheme.searchFieldDark
+                          : IosTheme.searchFieldLight,
                     ),
                     onChanged: (text) {
                       final hasText = text.trim().isNotEmpty;
@@ -699,18 +710,15 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 const SizedBox(width: 8),
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
+                  width: 34,
+                  height: 34,
                   decoration: BoxDecoration(
-                    color: isReadOnly ? Colors.grey : TelegramTheme.primaryBlue,
+                    color: isReadOnly
+                        ? IosTheme.systemGray3
+                        : (_isComposing || isGroup
+                            ? TelegramTheme.primaryBlue
+                            : (isDark ? IosTheme.systemGray5Dark : IosTheme.systemGray5Light)),
                     shape: BoxShape.circle,
-                    boxShadow: isReadOnly
-                        ? null
-                        : [
-                            BoxShadow(
-                              color: TelegramTheme.primaryBlue.withValues(alpha: 0.35),
-                              blurRadius: 6,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
                   ),
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 180),
@@ -718,7 +726,8 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                     child: _isComposing || isGroup
                         ? IconButton(
                             key: const ValueKey('send_btn'),
-                            icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                            padding: EdgeInsets.zero,
+                            icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 20),
                             tooltip: 'Send Message',
                             onPressed: _isComposing && !isReadOnly
                                 ? () => _handleSubmitted(provider)
@@ -726,7 +735,12 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                           )
                         : IconButton(
                             key: const ValueKey('mic_btn'),
-                            icon: const Icon(Icons.mic_rounded, color: Colors.white, size: 20),
+                            padding: EdgeInsets.zero,
+                            icon: Icon(
+                              Icons.mic_rounded,
+                              color: isDark ? Colors.white70 : Colors.black54,
+                              size: 20,
+                            ),
                             tooltip: 'Record Voice Note',
                             onPressed: !isReadOnly
                                 ? () {

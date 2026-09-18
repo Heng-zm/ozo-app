@@ -53,87 +53,90 @@ class ChatFoldersBar extends StatelessWidget {
 
     return Container(
       height: 44,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
       decoration: BoxDecoration(
-        color: isDark ? TelegramTheme.darkSidebar : TelegramTheme.lightSidebar,
+        color: isDark ? TelegramTheme.darkBackground : TelegramTheme.lightSidebar,
         border: Border(
           bottom: BorderSide(
-            color: isDark ? Colors.white10 : Colors.black12,
+            color: isDark ? IosTheme.hairlineDark : IosTheme.hairlineLight,
             width: 0.5,
           ),
         ),
       ),
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: folders.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          final item = folders[index];
-          final isSelected = provider.activeFolder == item.folder;
+      child: Container(
+        padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          color: isDark ? IosTheme.searchFieldDark : IosTheme.searchFieldLight,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: folders.map((item) {
+            final isSelected = provider.activeFolder == item.folder;
 
-          return GestureDetector(
-            onTap: () {
-              HapticFeedback.selectionClick();
-              provider.setFolder(item.folder);
-            },
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: isSelected
-                    ? TelegramTheme.primaryBlue.withValues(alpha: isDark ? 0.25 : 0.15)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(16),
-                border: isSelected
-                    ? Border.all(color: TelegramTheme.primaryBlue.withValues(alpha: 0.5))
-                    : null,
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    item.icon,
-                    size: 16,
+            return Expanded(
+              child: GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  provider.setFolder(item.folder);
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  decoration: BoxDecoration(
                     color: isSelected
-                        ? TelegramTheme.primaryBlue
-                        : (isDark ? Colors.white60 : Colors.black54),
+                        ? (isDark ? const Color(0xFF2C2C2E) : Colors.white)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: isSelected
+                        ? [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                              blurRadius: 3,
+                              offset: const Offset(0, 1),
+                            ),
+                          ]
+                        : null,
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    item.title,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                      color: isSelected
-                          ? TelegramTheme.primaryBlue
-                          : (isDark ? Colors.white70 : Colors.black87),
-                    ),
-                  ),
-                  if (item.badgeCount > 0) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? TelegramTheme.primaryBlue
-                            : (isDark ? Colors.white24 : Colors.black26),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        item.badgeCount > 99 ? '99+' : '${item.badgeCount}',
-                        style: const TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        item.title,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                          color: isSelected
+                              ? (isDark ? Colors.white : Colors.black)
+                              : IosTheme.systemGray,
+                          letterSpacing: -0.2,
                         ),
                       ),
-                    ),
-                  ],
-                ],
+                      if (item.badgeCount > 0) ...[
+                        const SizedBox(width: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: isSelected ? IosTheme.systemRed : IosTheme.systemGray,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            item.badgeCount > 99 ? '99+' : '${item.badgeCount}',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
-            ),
-          );
-        },
+            );
+          }).toList(),
+        ),
       ),
     );
   }

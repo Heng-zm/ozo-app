@@ -654,19 +654,12 @@ class ChatProvider extends ChangeNotifier {
     if (_activePeer == null) return;
 
     try {
-      final result = await FilePicker.platform.pickFiles(allowMultiple: false);
-      if (result != null && result.files.isNotEmpty && result.files.single.path != null) {
-        await sendFile(File(result.files.single.path!));
+      final pickedFile = await FilePicker.pickFile();
+      if (pickedFile != null && pickedFile.path != null) {
+        await sendFile(File(pickedFile.path!));
       }
-    } catch (_) {
-      try {
-        final pickedFile = await FilePicker.pickFile();
-        if (pickedFile != null && pickedFile.path != null) {
-          await sendFile(File(pickedFile.path!));
-        }
-      } catch (e) {
-        debugPrint('[ChatProvider] Error picking file: $e');
-      }
+    } catch (e) {
+      debugPrint('[ChatProvider] Error picking file: $e');
     }
   }
 
@@ -675,12 +668,11 @@ class ChatProvider extends ChangeNotifier {
     if (_activePeer == null) return;
 
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final pickedFile = await FilePicker.pickFile(
         type: FileType.image,
-        allowMultiple: false,
       );
-      if (result != null && result.files.isNotEmpty && result.files.single.path != null) {
-        await sendFile(File(result.files.single.path!));
+      if (pickedFile != null && pickedFile.path != null) {
+        await sendFile(File(pickedFile.path!));
       }
     } catch (e) {
       debugPrint('[ChatProvider] Error capturing photo: $e');

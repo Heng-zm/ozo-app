@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
-import 'package:qr/qr.dart';
 import '../constants.dart';
 import '../crypto/crypto_service.dart';
 import '../database/models.dart';
@@ -1004,5 +1003,9 @@ class P2pServer {
   </script>
 </body>
 </html>''';
+  }
+
+  String _escapeHtml(String text) {
+    return const HtmlEscape(HtmlEscapeMode.element).convert(text);
   }
 }

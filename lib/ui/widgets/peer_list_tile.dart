@@ -29,146 +29,158 @@ class _PeerListTileState extends State<PeerListTile> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final isOnline = widget.peer.isOnline;
 
-    return AnimatedScale(
-      scale: _isPressed ? 0.975 : 1.0,
-      duration: const Duration(milliseconds: 100),
-      curve: Curves.easeOutCubic,
-      child: GestureDetector(
-        onTapDown: (_) => setState(() => _isPressed = true),
-        onTapUp: (_) => setState(() => _isPressed = false),
-        onTapCancel: () => setState(() => _isPressed = false),
-        child: ListTile(
-          selected: widget.isSelected,
-          selectedTileColor: isDark
-              ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
-              : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          onTap: () {
-            HapticFeedback.lightImpact();
-            widget.onTap();
-          },
-          leading: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              CircleAvatar(
-                radius: 24,
-                backgroundColor: _getColorForName(widget.peer.name),
-                child: Text(
-                  widget.peer.name.isNotEmpty ? widget.peer.name[0].toUpperCase() : '?',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
-                ),
-              ),
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: isOnline
-                    ? _PulsingOnlineDot(isDark: isDark)
-                    : Container(
-                        width: 13,
-                        height: 13,
-                        decoration: BoxDecoration(
-                          color: TelegramTheme.offlineGrey,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: isDark ? TelegramTheme.darkSidebar : Colors.white,
-                            width: 2,
-                          ),
-                        ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AnimatedScale(
+          scale: _isPressed ? 0.975 : 1.0,
+          duration: const Duration(milliseconds: 100),
+          curve: Curves.easeOutCubic,
+          child: GestureDetector(
+            onTapDown: (_) => setState(() => _isPressed = true),
+            onTapUp: (_) => setState(() => _isPressed = false),
+            onTapCancel: () => setState(() => _isPressed = false),
+            child: ListTile(
+              selected: widget.isSelected,
+              selectedTileColor: isDark
+                  ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
+                  : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              onTap: () {
+                HapticFeedback.lightImpact();
+                widget.onTap();
+              },
+              leading: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  CircleAvatar(
+                    radius: 24,
+                    backgroundColor: _getColorForName(widget.peer.name),
+                    child: Text(
+                      widget.peer.name.isNotEmpty ? widget.peer.name[0].toUpperCase() : '?',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
                       ),
+                    ),
+                  ),
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: isOnline
+                        ? _PulsingOnlineDot(isDark: isDark)
+                        : Container(
+                            width: 13,
+                            height: 13,
+                            decoration: BoxDecoration(
+                              color: TelegramTheme.offlineGrey,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: isDark ? TelegramTheme.darkSidebar : Colors.white,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                  ),
+                ],
               ),
-            ],
-          ),
-          title: Row(
-            children: [
-              Expanded(
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.peer.name,
+                      style: TextStyle(
+                        fontWeight: widget.isSelected ? FontWeight.bold : FontWeight.w600,
+                        fontSize: 15,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (widget.peer.isRemote) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.purple.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.purple.withValues(alpha: 0.3)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.cloud_rounded, size: 12, color: Colors.purple),
+                          SizedBox(width: 4),
+                          Text('Remote', style: TextStyle(fontSize: 10, color: Colors.purple, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  if (widget.peer.hasIdentityConflict) ...[
+                    const Tooltip(
+                      message: 'Identity changed! Possible impersonation attempt.',
+                      child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 18),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
+                  _buildPlatformBadge(widget.peer.platform),
+                ],
+              ),
+              subtitle: Padding(
+                padding: const EdgeInsets.only(top: 2),
                 child: Text(
-                  widget.peer.name,
+                  widget.peer.isRemote
+                      ? 'Remote Cloudflare Tunnel'
+                      : (isOnline ? '${widget.peer.ip}:${widget.peer.port}' : 'Last seen ${_formatLastSeen(widget.peer.lastSeen)}'),
                   style: TextStyle(
-                    fontWeight: widget.isSelected ? FontWeight.bold : FontWeight.w600,
-                    fontSize: 15,
+                    fontSize: 12,
+                    color: (isOnline || widget.peer.isRemote)
+                        ? (widget.peer.isRemote ? Colors.purple : TelegramTheme.onlineGreen)
+                        : (isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary),
                   ),
-                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              if (widget.peer.isRemote) ...[
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.purple.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.purple.withValues(alpha: 0.3)),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.peer.isPinned)
+                    const Padding(
+                      padding: EdgeInsets.only(right: 6),
+                      child: Icon(Icons.push_pin_rounded, size: 14, color: TelegramTheme.primaryBlue),
+                    ),
+                  if (widget.unreadCount > 0)
+                    Container(
+                      margin: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: TelegramTheme.primaryBlue,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${widget.unreadCount}',
+                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    size: 18,
+                    color: widget.isSelected
+                        ? TelegramTheme.primaryBlue
+                        : (isDark ? Colors.white24 : Colors.black26),
                   ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.cloud_rounded, size: 12, color: Colors.purple),
-                      SizedBox(width: 4),
-                      Text('Remote', style: TextStyle(fontSize: 10, color: Colors.purple, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 6),
-              ],
-              if (widget.peer.hasIdentityConflict) ...[
-                const Tooltip(
-                  message: 'Identity changed! Possible impersonation attempt.',
-                  child: Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 18),
-                ),
-                const SizedBox(width: 4),
-              ],
-              _buildPlatformBadge(widget.peer.platform),
-            ],
-          ),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              widget.peer.isRemote
-                  ? 'Remote Cloudflare Tunnel'
-                  : (isOnline ? '${widget.peer.ip}:${widget.peer.port}' : 'Last seen ${_formatLastSeen(widget.peer.lastSeen)}'),
-              style: TextStyle(
-                fontSize: 12,
-                color: (isOnline || widget.peer.isRemote)
-                    ? (widget.peer.isRemote ? Colors.purple : TelegramTheme.onlineGreen)
-                    : (isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary),
+                ],
               ),
             ),
           ),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (widget.peer.isPinned)
-                const Padding(
-                  padding: EdgeInsets.only(right: 6),
-                  child: Icon(Icons.push_pin_rounded, size: 14, color: TelegramTheme.primaryBlue),
-                ),
-              if (widget.unreadCount > 0)
-                Container(
-                  margin: const EdgeInsets.only(right: 6),
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: TelegramTheme.primaryBlue,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(
-                    '${widget.unreadCount}',
-                    style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              Icon(
-                Icons.chevron_right_rounded,
-                size: 18,
-                color: widget.isSelected
-                    ? TelegramTheme.primaryBlue
-                    : (isDark ? Colors.white24 : Colors.black26),
-              ),
-            ],
-          ),
         ),
-      ),
+        Divider(
+          height: 0.5,
+          thickness: 0.5,
+          indent: 76,
+          endIndent: 0,
+          color: isDark ? IosTheme.hairlineDark : IosTheme.hairlineLight,
+        ),
+      ],
     );
   }
 

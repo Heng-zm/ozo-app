@@ -38,9 +38,9 @@ class ChatBubble extends StatelessWidget {
         ? (isDark ? TelegramTheme.darkOutgoingBubble : TelegramTheme.lightOutgoingBubble)
         : (isDark ? TelegramTheme.darkIncomingBubble : TelegramTheme.lightIncomingBubble);
 
-    final textColor = isDark
-        ? TelegramTheme.darkTextPrimary
-        : TelegramTheme.lightTextPrimary;
+    final textColor = isOutgoing
+        ? Colors.white
+        : (isDark ? TelegramTheme.darkTextPrimary : TelegramTheme.lightTextPrimary);
 
     return _SwipeToReply(
       isOutgoing: isOutgoing,
@@ -74,186 +74,191 @@ class ChatBubble extends StatelessWidget {
                 ),
                 border: message.isSticker
                     ? null
-                    : Border.all(
-                        color: isDark
-                            ? Colors.white.withValues(alpha: 0.06)
-                            : Colors.black.withValues(alpha: 0.04),
-                        width: 0.5,
-                      ),
-                boxShadow: message.isSticker
-                    ? null
-                    : [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: isDark ? 0.22 : 0.05),
-                          blurRadius: 4,
-                          offset: const Offset(0, 1.5),
-                        ),
-                      ],
+                    : (isOutgoing
+                        ? null
+                        : Border.all(
+                            color: isDark
+                                ? Colors.white.withValues(alpha: 0.05)
+                                : Colors.black.withValues(alpha: 0.03),
+                            width: 0.5,
+                          )),
               ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (!isOutgoing)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(
-                      message.senderName,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: TelegramTheme.primaryBlue,
-                      ),
-                    ),
-                  ),
-
-                // Quoted Reply preview if this is a reply to another message
-                if (message.replyToText != null) ...[
-                  InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () {
-                      if (message.replyToId != null && onQuotedMessageTap != null) {
-                        onQuotedMessageTap!(message.replyToId!);
-                      }
-                    },
-                    child: Container(
-                      margin: const EdgeInsets.only(bottom: 6),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(8),
-                        border: const Border(
-                          left: BorderSide(
-                            color: TelegramTheme.primaryBlue,
-                            width: 3,
-                          ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!isOutgoing)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        message.senderName,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: TelegramTheme.primaryBlue,
                         ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Flexible(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  message.replyToSenderName ?? 'Reply',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: TelegramTheme.primaryBlue,
-                                  ),
-                                ),
-                                Text(
-                                  message.replyToText!,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
-                                  ),
-                                ),
-                              ],
+                    ),
+
+                  // Quoted Reply preview if this is a reply to another message
+                  if (message.replyToText != null) ...[
+                    InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () {
+                        if (message.replyToId != null && onQuotedMessageTap != null) {
+                          onQuotedMessageTap!(message.replyToId!);
+                        }
+                      },
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: isOutgoing
+                              ? Colors.white.withValues(alpha: 0.18)
+                              : (isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.05)),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border(
+                            left: BorderSide(
+                              color: isOutgoing ? Colors.white : TelegramTheme.primaryBlue,
+                              width: 3,
                             ),
                           ),
-                          if (message.replyToId != null) ...[
-                            const SizedBox(width: 8),
-                            Icon(
-                              Icons.arrow_upward_rounded,
-                              size: 14,
-                              color: isDark ? Colors.white38 : Colors.black38,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    message.replyToSenderName ?? 'Reply',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: isOutgoing ? Colors.white : TelegramTheme.primaryBlue,
+                                    ),
+                                  ),
+                                  Text(
+                                    message.replyToText!,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: isOutgoing
+                                          ? Colors.white70
+                                          : (isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
+                            if (message.replyToId != null) ...[
+                              const SizedBox(width: 8),
+                              Icon(
+                                Icons.arrow_upward_rounded,
+                                size: 14,
+                                color: isOutgoing ? Colors.white70 : (isDark ? Colors.white38 : Colors.black38),
+                              ),
+                            ],
                           ],
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-
-                if (message.isSticker)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(
-                      message.content,
-                      style: const TextStyle(fontSize: 80),
-                    ),
-                  )
-                else if (message.isVoice)
-                  VoiceNotePlayer(message: message, isMe: isOutgoing)
-                else if (message.isLocation)
-                  _buildLocationCard(context, isDark, isOutgoing)
-                else if (message.isImage && message.fileMetadata != null)
-                  _buildImageAttachmentCard(context, message.fileMetadata!)
-                else if (message.type == MessageType.file && message.fileMetadata != null)
-                  _buildFileAttachmentCard(context, message.fileMetadata!)
-                else
-                  Text(
-                    message.content,
-                    style: TextStyle(
-                      color: textColor,
-                      fontSize: 15,
-                      height: 1.3,
-                    ),
-                  ),
-                const SizedBox(height: 4),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text(
-                      timeStr,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: isDark
-                            ? TelegramTheme.darkTextSecondary
-                            : TelegramTheme.lightTextSecondary,
-                      ),
-                    ),
-                    if (isOutgoing) ...[
-                      const SizedBox(width: 4),
-                      _buildStatusIcon(message.status),
-                    ],
-                  ],
-                ),
-
-                // Emoji Reaction Chips
-                if (message.reactions.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 4,
-                    children: message.reactions.entries.map((entry) {
-                      final emoji = entry.key;
-                      final userIds = entry.value;
-                      final count = userIds.length;
-                      final hasReacted = chatProvider != null && userIds.contains(chatProvider.deviceId);
-                      return GestureDetector(
-                        onTap: () => chatProvider?.toggleReaction(message.id, emoji),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: hasReacted
-                                ? TelegramTheme.primaryBlue.withValues(alpha: 0.2)
-                                : (isDark ? Colors.white12 : Colors.black12),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: hasReacted ? TelegramTheme.primaryBlue : Colors.transparent,
-                            ),
-                          ),
-                          child: Text(
-                            '$emoji $count',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: hasReacted ? FontWeight.bold : FontWeight.normal,
-                            ),
-                          ),
                         ),
-                      );
-                    }).toList(),
+                      ),
+                    ),
+                  ],
+
+                  if (message.isSticker)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Text(
+                        message.content,
+                        style: const TextStyle(fontSize: 80),
+                      ),
+                    )
+                  else if (message.isVoice)
+                    VoiceNotePlayer(message: message, isMe: isOutgoing)
+                  else if (message.isLocation)
+                    _buildLocationCard(context, isDark, isOutgoing)
+                  else if (message.isImage && message.fileMetadata != null)
+                    _buildImageAttachmentCard(context, message.fileMetadata!)
+                  else if (message.type == MessageType.file && message.fileMetadata != null)
+                    _buildFileAttachmentCard(context, message.fileMetadata!)
+                  else
+                    Text(
+                      message.content,
+                      style: TextStyle(
+                        color: textColor,
+                        fontSize: 15,
+                        height: 1.3,
+                      ),
+                    ),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        timeStr,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isOutgoing
+                              ? Colors.white70
+                              : (isDark
+                                  ? TelegramTheme.darkTextSecondary
+                                  : TelegramTheme.lightTextSecondary),
+                        ),
+                      ),
+                      if (isOutgoing) ...[
+                        const SizedBox(width: 4),
+                        _buildStatusIcon(message.status, isOutgoing: isOutgoing),
+                      ],
+                    ],
                   ),
+
+                  // Emoji Reaction Chips
+                  if (message.reactions.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: message.reactions.entries.map((entry) {
+                        final emoji = entry.key;
+                        final userIds = entry.value;
+                        final count = userIds.length;
+                        final hasReacted = chatProvider != null && userIds.contains(chatProvider.deviceId);
+                        return GestureDetector(
+                          onTap: () => chatProvider?.toggleReaction(message.id, emoji),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: hasReacted
+                                  ? (isOutgoing
+                                      ? Colors.white.withValues(alpha: 0.25)
+                                      : TelegramTheme.primaryBlue.withValues(alpha: 0.2))
+                                  : (isDark ? Colors.white12 : Colors.black12),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: hasReacted
+                                    ? (isOutgoing ? Colors.white : TelegramTheme.primaryBlue)
+                                    : Colors.transparent,
+                              ),
+                            ),
+                            child: Text(
+                              '$emoji $count',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: hasReacted ? FontWeight.bold : FontWeight.normal,
+                                color: isOutgoing ? Colors.white : null,
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -783,18 +788,20 @@ class ChatBubble extends StatelessWidget {
     );
   }
 
-  Widget _buildStatusIcon(MessageStatus status) {
+  Widget _buildStatusIcon(MessageStatus status, {bool isOutgoing = false}) {
+    final normalColor = isOutgoing ? Colors.white70 : Colors.grey;
+    final readColor = isOutgoing ? Colors.white : TelegramTheme.checkmarkBlue;
     switch (status) {
       case MessageStatus.pending:
-        return const Icon(Icons.access_time, size: 13, color: Colors.grey);
+        return Icon(Icons.access_time_rounded, size: 12, color: normalColor);
       case MessageStatus.sent:
-        return const Icon(Icons.check, size: 14, color: Colors.grey);
+        return Icon(Icons.check_rounded, size: 13, color: normalColor);
       case MessageStatus.delivered:
-        return const Icon(Icons.done_all, size: 14, color: Colors.grey);
+        return Icon(Icons.done_all_rounded, size: 13, color: normalColor);
       case MessageStatus.read:
-        return const Icon(Icons.done_all, size: 14, color: TelegramTheme.checkmarkBlue);
+        return Icon(Icons.done_all_rounded, size: 13, color: readColor);
       case MessageStatus.failed:
-        return const Icon(Icons.error_outline, size: 13, color: Colors.red);
+        return const Icon(Icons.error_outline_rounded, size: 13, color: Colors.redAccent);
     }
   }
 

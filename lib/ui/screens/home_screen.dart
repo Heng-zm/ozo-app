@@ -96,15 +96,15 @@ class HomeScreen extends StatelessWidget {
             // Mobile stack layout with iOS slide & fade transitions and edge-swipe back
             final hasActiveChat = selectedGroup != null || selectedPeer != null;
 
-            return WillPopScope(
-              onWillPop: () async {
+            return PopScope(
+              canPop: !hasActiveChat,
+              onPopInvokedWithResult: (didPop, result) {
+                if (didPop) return;
                 if (hasActiveChat) {
                   HapticFeedback.lightImpact();
                   chatProvider.setActiveGroup(null);
                   chatProvider.setActivePeer(null);
-                  return false;
                 }
-                return true;
               },
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 280),
@@ -283,27 +283,39 @@ class HomeScreen extends StatelessWidget {
 
   Widget _buildSearchBar(BuildContext context, ChatProvider provider, bool isDark) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       child: TextField(
         onChanged: (val) => provider.setSearchQuery(val),
+        style: TextStyle(
+          fontSize: 14,
+          color: isDark ? Colors.white : Colors.black,
+        ),
         decoration: InputDecoration(
-          hintText: 'Search chats or messages...',
-          hintStyle: TextStyle(
-            fontSize: 13,
-            color: isDark ? Colors.white38 : Colors.black38,
+          hintText: 'Search',
+          hintStyle: const TextStyle(
+            fontSize: 14,
+            color: IosTheme.systemGray,
           ),
-          prefixIcon: const Icon(Icons.search_rounded, size: 18),
+          prefixIcon: const Icon(
+            Icons.search_rounded,
+            size: 19,
+            color: IosTheme.systemGray,
+          ),
+          prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 36),
           suffixIcon: provider.searchQuery.isNotEmpty
               ? IconButton(
-                  icon: const Icon(Icons.clear_rounded, size: 16),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.cancel_rounded, size: 16, color: IosTheme.systemGray),
                   onPressed: () => provider.setSearchQuery(''),
                 )
               : null,
           filled: true,
-          fillColor: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.04),
-          contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+          fillColor: isDark ? IosTheme.searchFieldDark : IosTheme.searchFieldLight,
+          contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 8),
+          isDense: true,
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(10),
             borderSide: BorderSide.none,
           ),
         ),
@@ -358,94 +370,105 @@ class HomeScreen extends StatelessWidget {
     }
 
     return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       children: [
         // Group Chats Section
         if (groups.isNotEmpty) ...[
-          _buildSectionHeader('GROUP CHATS (${groups.length})', isDark),
+          _buildSectionHeader('GROUPS', isDark),
           ...groups.map((group) {
             final isSelected = provider.activeGroup?.id == group.id;
             final unread = provider.getUnreadCount(group.id);
 
-            return _PressScaleTile(
-              child: ListTile(
-                selected: isSelected,
-                selectedTileColor: isDark
-                    ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
-                    : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                onTap: () {
-                  HapticFeedback.lightImpact();
-                  provider.setActiveGroup(group);
-                },
-                onLongPress: () {
-                  HapticFeedback.mediumImpact();
-                  _showChatActionDialog(context, provider, group.id, group.name, group.isPinned, true);
-                },
-                leading: CircleAvatar(
-                  radius: 22,
-                  backgroundColor: Colors.indigo.shade600,
-                  child: const Icon(Icons.group_rounded, color: Colors.white, size: 20),
-                ),
-                title: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        group.name,
-                        style: TextStyle(
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
-                          fontSize: 14,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _PressScaleTile(
+                  child: ListTile(
+                    selected: isSelected,
+                    selectedTileColor: isDark
+                        ? TelegramTheme.primaryBlue.withValues(alpha: 0.15)
+                        : TelegramTheme.primaryBlue.withValues(alpha: 0.1),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      provider.setActiveGroup(group);
+                    },
+                    onLongPress: () {
+                      HapticFeedback.mediumImpact();
+                      _showChatActionDialog(context, provider, group.id, group.name, group.isPinned, true);
+                    },
+                    leading: CircleAvatar(
+                      radius: 24,
+                      backgroundColor: Colors.indigo.shade600,
+                      child: const Icon(Icons.group_rounded, color: Colors.white, size: 20),
                     ),
-                    if (group.isPinned)
-                      const Icon(Icons.push_pin_rounded, size: 14, color: TelegramTheme.primaryBlue),
-                  ],
-                ),
-                subtitle: Text(
-                  '${group.memberIds.length} members • Host: ${group.hostName}${group.backupHostName != null ? ' (Backup: ${group.backupHostName})' : ''}',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+                    title: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            group.name,
+                            style: TextStyle(
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (group.isPinned)
+                          const Icon(Icons.push_pin_rounded, size: 14, color: TelegramTheme.primaryBlue),
+                      ],
+                    ),
+                    subtitle: Text(
+                      '${group.memberIds.length} members • Host: ${group.hostName}${group.backupHostName != null ? ' (Backup: ${group.backupHostName})' : ''}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark ? TelegramTheme.darkTextSecondary : TelegramTheme.lightTextSecondary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (unread > 0)
+                          Container(
+                            margin: const EdgeInsets.only(right: 6),
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: TelegramTheme.primaryBlue,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '$unread',
+                              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        Icon(
+                          Icons.chevron_right_rounded,
+                          size: 18,
+                          color: isSelected
+                              ? TelegramTheme.primaryBlue
+                              : (isDark ? Colors.white24 : Colors.black26),
+                        ),
+                      ],
+                    ),
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (unread > 0)
-                      Container(
-                        margin: const EdgeInsets.only(right: 6),
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: TelegramTheme.primaryBlue,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          '$unread',
-                          style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    Icon(
-                      Icons.chevron_right_rounded,
-                      size: 18,
-                      color: isSelected
-                          ? TelegramTheme.primaryBlue
-                          : (isDark ? Colors.white24 : Colors.black26),
-                    ),
-                  ],
+                Divider(
+                  height: 0.5,
+                  thickness: 0.5,
+                  indent: 76,
+                  endIndent: 0,
+                  color: isDark ? IosTheme.hairlineDark : IosTheme.hairlineLight,
                 ),
-              ),
+              ],
             );
           }),
-          const Divider(height: 16, indent: 16, endIndent: 16),
         ],
 
         // Direct Peers Section
         if (peers.isNotEmpty) ...[
-          _buildSectionHeader('DISCOVERED PEERS (${peers.length})', isDark),
+          _buildSectionHeader('CHATS', isDark),
           ...peers.map((peer) {
             final isSelected = provider.activePeer?.id == peer.id;
             return GestureDetector(

@@ -123,10 +123,19 @@ jobs:
               --build-number=${{ github.run_number }} \
               --build-name=1.1.${{ github.run_number }}
           else
-            echo "Building unsigned iOS app..."
-            flutter build ios --release --no-codesign \
-              --build-number=${{ github.run_number }} \
-              --build-name=1.1.${{ github.run_number }}
+            echo "Building unsigned iOS app directly via xcodebuild..."
+            xcodebuild build \
+              -workspace ios/Runner.xcworkspace \
+              -scheme Runner \
+              -configuration Release \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build/DerivedData \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_INJECT_BASE_ENTITLEMENTS=NO \
+              DEVELOPMENT_TEAM="" \
+              PROVISIONING_PROFILE_SPECIFIER=""
           fi
 
       - name: Package .ipa File
