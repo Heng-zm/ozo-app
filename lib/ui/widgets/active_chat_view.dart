@@ -198,6 +198,83 @@ class _ActiveChatViewState extends State<ActiveChatView> {
             icon: const Icon(Icons.calendar_today_rounded, size: 20),
             onPressed: () => _jumpToDate(context, messages),
           ),
+          PopupMenuButton<int?>(
+            tooltip: 'Disappearing Messages',
+            icon: Icon(
+              provider.activeChatEphemeralSeconds != null
+                  ? Icons.timer_rounded
+                  : Icons.timer_outlined,
+              color: provider.activeChatEphemeralSeconds != null
+                  ? TelegramTheme.primaryBlue
+                  : null,
+              size: 22,
+            ),
+            onSelected: (seconds) {
+              provider.setChatEphemeralSeconds(seconds);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    seconds == null
+                        ? 'Disappearing messages turned off'
+                        : 'Disappearing messages set to ${_formatDuration(seconds)}',
+                  ),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem<int?>(
+                value: null,
+                child: Row(
+                  children: [
+                    Icon(Icons.timer_off_rounded, size: 18),
+                    SizedBox(width: 8),
+                    Text('Off'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<int?>(
+                value: 10,
+                child: Row(
+                  children: [
+                    Icon(Icons.local_fire_department_rounded, color: Colors.orange, size: 18),
+                    SizedBox(width: 8),
+                    Text('10 Seconds (Test)'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<int?>(
+                value: 60,
+                child: Row(
+                  children: [
+                    Icon(Icons.timer_rounded, size: 18),
+                    SizedBox(width: 8),
+                    Text('1 Minute'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<int?>(
+                value: 3600,
+                child: Row(
+                  children: [
+                    Icon(Icons.timer_rounded, size: 18),
+                    SizedBox(width: 8),
+                    Text('1 Hour'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<int?>(
+                value: 86400,
+                child: Row(
+                  children: [
+                    Icon(Icons.timer_rounded, size: 18),
+                    SizedBox(width: 8),
+                    Text('24 Hours'),
+                  ],
+                ),
+              ),
+            ],
+          ),
           if (!isGroup) ...[
             IconButton(
               tooltip: 'Voice Call',
@@ -1152,6 +1229,13 @@ class _ActiveChatViewState extends State<ActiveChatView> {
         curve: Curves.easeInOut,
       );
     }
+  }
+
+  String _formatDuration(int seconds) {
+    if (seconds < 60) return '$seconds seconds';
+    if (seconds < 3600) return '${seconds ~/ 60} minutes';
+    if (seconds < 86400) return '${seconds ~/ 3600} hours';
+    return '${seconds ~/ 86400} days';
   }
 }
 

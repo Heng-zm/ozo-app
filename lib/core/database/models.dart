@@ -400,6 +400,8 @@ class ChatMessage {
   final String? replyToText;
   final String? replyToSenderName;
   final Map<String, List<String>> reactions;
+  final int? ephemeralDurationSeconds;
+  DateTime? expiresAt;
 
   ChatMessage({
     required this.id,
@@ -419,8 +421,14 @@ class ChatMessage {
     this.replyToId,
     this.replyToText,
     this.replyToSenderName,
+    this.ephemeralDurationSeconds,
+    DateTime? expiresAt,
     Map<String, List<String>>? reactions,
-  }) : reactions = reactions ?? {};
+  })  : reactions = reactions ?? {},
+        expiresAt = expiresAt ??
+            (ephemeralDurationSeconds != null && ephemeralDurationSeconds > 0
+                ? timestamp.add(Duration(seconds: ephemeralDurationSeconds))
+                : null);
 
   bool get isImage {
     if (type == MessageType.image) return true;
@@ -439,6 +447,14 @@ class ChatMessage {
   bool get isVoice => type == MessageType.voice;
   bool get isSticker => type == MessageType.sticker;
   bool get isLocation => type == MessageType.location;
+  bool get isEphemeral => ephemeralDurationSeconds != null && ephemeralDurationSeconds! > 0;
+  bool get isExpired => expiresAt != null && DateTime.now().isAfter(expiresAt!);
+
+  int get remainingEphemeralSeconds {
+    if (expiresAt == null) return 0;
+    final diff = expiresAt!.difference(DateTime.now()).inSeconds;
+    return diff > 0 ? diff : 0;
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -459,6 +475,8 @@ class ChatMessage {
         'replyToText': replyToText,
         'replyToSenderName': replyToSenderName,
         'reactions': reactions,
+        'ephemeralDurationSeconds': ephemeralDurationSeconds,
+        'expiresAt': expiresAt?.toIso8601String(),
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
@@ -471,6 +489,10 @@ class ChatMessage {
         }
       });
     }
+
+    final ephemSec = json['ephemeralDurationSeconds'] as int?;
+    final expStr = json['expiresAt'] as String?;
+    final parsedExpiresAt = expStr != null ? DateTime.tryParse(expStr) : null;
 
     return ChatMessage(
       id: json['id'] as String,
@@ -504,6 +526,8 @@ class ChatMessage {
       replyToText: json['replyToText'] as String?,
       replyToSenderName: json['replyToSenderName'] as String?,
       reactions: parsedReactions,
+      ephemeralDurationSeconds: ephemSec,
+      expiresAt: parsedExpiresAt,
     );
   }
 
@@ -526,6 +550,8 @@ class ChatMessage {
     String? replyToText,
     String? replyToSenderName,
     Map<String, List<String>>? reactions,
+    int? ephemeralDurationSeconds,
+    DateTime? expiresAt,
   }) {
     return ChatMessage(
       id: id ?? this.id,
@@ -546,6 +572,8 @@ class ChatMessage {
       replyToText: replyToText ?? this.replyToText,
       replyToSenderName: replyToSenderName ?? this.replyToSenderName,
       reactions: reactions ?? Map<String, List<String>>.from(this.reactions),
+      ephemeralDurationSeconds: ephemeralDurationSeconds ?? this.ephemeralDurationSeconds,
+      expiresAt: expiresAt ?? this.expiresAt,
     );
   }
 }

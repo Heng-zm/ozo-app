@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:qr/qr.dart';
 import '../constants.dart';
 import '../crypto/crypto_service.dart';
@@ -43,6 +46,10 @@ class P2pServer {
   // Active files available for download: transferId -> File
   final Map<String, File> _sharedFiles = {};
 
+  // Web Messenger in-memory thread (for browser visitor chat)
+  final List<Map<String, dynamic>> _webMessages = [];
+  List<Map<String, dynamic>> get webMessages => List.unmodifiable(_webMessages);
+
   // Callbacks
   MessageCallback? onMessageReceived;
   FileOfferCallback? onFileOffered;
@@ -59,6 +66,36 @@ class P2pServer {
   void Function(String chatId, String messageId)? onMessagePinned;
   void Function(String chatId)? onMessageUnpinned;
   void Function(Peer peer)? onPeerAnnouncedViaApi;
+  void Function(File file, String originalFileName)? onFileUploadedViaApi;
+
+  void broadcastWebMessage({
+    required String content,
+    required String senderName,
+    bool isMe = true,
+  }) {
+    final msg = {
+      'id': 'web_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1000)}',
+      'senderName': senderName,
+      'content': content,
+      'isMe': isMe,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+    _webMessages.add(msg);
+    if (_webMessages.length > 100) {
+      _webMessages.removeAt(0);
+    }
+    final payload = jsonEncode({
+      'type': 'WEB_MSG',
+      ...msg,
+    });
+    for (final ws in _openWebSockets) {
+      if (ws.readyState == WebSocket.open) {
+        try {
+          ws.add(payload);
+        } catch (_) {}
+      }
+    }
+  }
 
   int get port => _actualPort;
 
@@ -438,8 +475,167 @@ class P2pServer {
       return;
     }
 
+    // Web Messenger API: Send message
+    if (path == '/api/message' && request.method == 'POST') {
+      try {
+        final body = await utf8.decodeStream(request);
+        final json = jsonDecode(body) as Map<String, dynamic>;
+        final text = (json['text'] as String?)?.trim() ?? '';
+        final senderName = (json['senderName'] as String?)?.trim() ?? 'Web Visitor';
+        if (text.isNotEmpty) {
+          final msgId = 'web_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1000)}';
+          final webMsgMap = {
+            'id': msgId,
+            'senderName': senderName,
+            'content': text,
+            'isMe': false,
+            'timestamp': DateTime.now().toIso8601String(),
+          };
+          _webMessages.add(webMsgMap);
+          if (_webMessages.length > 100) {
+            _webMessages.removeAt(0);
+          }
+
+          // Broadcast to any open web socket viewers
+          final wsPayload = jsonEncode({
+            'type': 'WEB_MSG',
+            ...webMsgMap,
+          });
+          for (final ws in _openWebSockets) {
+            if (ws.readyState == WebSocket.open) {
+              try {
+                ws.add(wsPayload);
+              } catch (_) {}
+            }
+          }
+
+          // Ingest into ChatProvider as incoming message from Web Visitor
+          final chatMsg = ChatMessage(
+            id: msgId,
+            chatId: 'web_visitor',
+            senderId: 'web_client',
+            senderName: senderName,
+            recipientId: deviceId,
+            content: text,
+            type: MessageType.text,
+            timestamp: DateTime.now(),
+            status: MessageStatus.delivered,
+          );
+          onMessageReceived?.call(chatMsg);
+
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(jsonEncode({'success': true, 'message': 'Delivered to OZO host'}));
+          await request.response.close();
+          return;
+        }
+      } catch (e) {
+        request.response.statusCode = HttpStatus.badRequest;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({'success': false, 'error': e.toString()}));
+        await request.response.close();
+        return;
+      }
+    }
+
+    // Web Messenger API: Get recent messages
+    if (path == '/api/messages') {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'success': true,
+        'messages': _webMessages,
+      }));
+      await request.response.close();
+      return;
+    }
+
+    // Web Drop File Upload endpoint
+    if (path == '/api/upload' && request.method == 'POST') {
+      await _handleFileUpload(request);
+      return;
+    }
+
     request.response.statusCode = HttpStatus.notFound;
     await request.response.close();
+  }
+
+  Future<void> _handleFileUpload(HttpRequest request) async {
+    try {
+      String fileName = request.headers.value('x-filename') ?? '';
+      if (fileName.isNotEmpty) {
+        fileName = Uri.decodeComponent(fileName);
+      } else {
+        final disposition = request.headers.value('content-disposition');
+        if (disposition != null) {
+          final match = RegExp(r'filename="?([^"]+)"?').firstMatch(disposition);
+          if (match != null) {
+            fileName = match.group(1) ?? '';
+          }
+        }
+      }
+      if (fileName.isEmpty) {
+        fileName = 'web_upload_${DateTime.now().millisecondsSinceEpoch}.bin';
+      }
+
+      Directory uploadDir;
+      try {
+        final tempDir = await getTemporaryDirectory();
+        uploadDir = Directory(p.join(tempDir.path, 'ozo_web_uploads'));
+      } catch (_) {
+        uploadDir = Directory(p.join(Directory.systemTemp.path, 'ozo_web_uploads'));
+      }
+      if (!await uploadDir.exists()) {
+        await uploadDir.create(recursive: true);
+      }
+
+      final savedFile = File(p.join(uploadDir.path, fileName));
+      final sink = savedFile.openWrite();
+      await request.pipe(sink);
+
+      final fileSize = await savedFile.length();
+
+      // Register as a shared file as well so web users can download it
+      final transferId = 'up_${DateTime.now().millisecondsSinceEpoch}';
+      _sharedFiles[transferId] = savedFile;
+
+      // Broadcast system web message announcing the file
+      final fileNotice = {
+        'id': 'web_${DateTime.now().millisecondsSinceEpoch}',
+        'senderName': 'System',
+        'content': '📁 Shared file: $fileName (${(fileSize / (1024 * 1024)).toStringAsFixed(2)} MB)',
+        'isMe': false,
+        'fileUrl': '/api/file/download/$transferId',
+        'fileName': fileName,
+        'timestamp': DateTime.now().toIso8601String(),
+      };
+      _webMessages.add(fileNotice);
+      for (final ws in _openWebSockets) {
+        if (ws.readyState == WebSocket.open) {
+          try {
+            ws.add(jsonEncode({'type': 'WEB_MSG', ...fileNotice}));
+          } catch (_) {}
+        }
+      }
+
+      onFileUploadedViaApi?.call(savedFile, fileName);
+
+      request.response.statusCode = HttpStatus.ok;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'success': true,
+        'fileName': fileName,
+        'fileSize': fileSize,
+        'downloadUrl': '/api/file/download/$transferId',
+        'message': 'File uploaded and received by OZO successfully.',
+      }));
+      await request.response.close();
+    } catch (e) {
+      request.response.statusCode = HttpStatus.internalServerError;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({'success': false, 'error': e.toString()}));
+      try {
+        await request.response.close();
+      } catch (_) {}
+    }
   }
 
   ContentType _resolveContentType(String path) {
@@ -697,6 +893,44 @@ class P2pServer {
               final chatId = msg['chatId'] as String;
               onMessageUnpinned?.call(chatId);
               break;
+            case 'WEB_MSG':
+              final content = (msg['content'] as String?)?.trim() ?? '';
+              final sender = (msg['senderName'] as String?)?.trim() ?? 'Web Visitor';
+              if (content.isNotEmpty) {
+                final msgId = msg['id'] as String? ?? 'web_${DateTime.now().millisecondsSinceEpoch}';
+                final item = {
+                  'id': msgId,
+                  'senderName': sender,
+                  'content': content,
+                  'isMe': false,
+                  'timestamp': DateTime.now().toIso8601String(),
+                };
+                _webMessages.add(item);
+                if (_webMessages.length > 100) _webMessages.removeAt(0);
+
+                // Broadcast to other open web sockets
+                for (final ws in _openWebSockets) {
+                  if (ws != socket && ws.readyState == WebSocket.open) {
+                    try {
+                      ws.add(jsonEncode({'type': 'WEB_MSG', ...item}));
+                    } catch (_) {}
+                  }
+                }
+
+                final chatMsg = ChatMessage(
+                  id: msgId,
+                  chatId: 'web_visitor',
+                  senderId: 'web_client',
+                  senderName: sender,
+                  recipientId: deviceId,
+                  content: content,
+                  type: MessageType.text,
+                  timestamp: DateTime.now(),
+                  status: MessageStatus.delivered,
+                );
+                onMessageReceived?.call(chatMsg);
+              }
+              break;
           }
         } catch (e) {
           if (kDebugMode) print('WS parse error: $e');
@@ -758,6 +992,8 @@ class P2pServer {
     final replyToId = msg['replyToId'] as String?;
     final replyToText = msg['replyToText'] as String?;
     final replyToSenderName = msg['replyToSenderName'] as String?;
+    final ephemeralSec = msg['ephemeralSeconds'] as int?;
+    final expAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
 
     final chatMsg = ChatMessage(
       id: messageId,
@@ -775,6 +1011,8 @@ class P2pServer {
       replyToId: replyToId,
       replyToText: replyToText,
       replyToSenderName: replyToSenderName,
+      ephemeralDurationSeconds: ephemeralSec,
+      expiresAt: expAt,
     );
 
     onMessageReceived?.call(chatMsg);
@@ -834,6 +1072,8 @@ class P2pServer {
       final senderName = msg['senderName'] as String? ?? 'Member';
       final content = msg['content'] as String? ?? '';
       final timestamp = DateTime.fromMillisecondsSinceEpoch(msg['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch);
+      final ephemeralSec = msg['ephemeralSeconds'] as int?;
+      final expAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
 
       final chatMsg = ChatMessage(
         id: messageId,
@@ -847,6 +1087,8 @@ class P2pServer {
         status: MessageStatus.delivered,
         isGroup: true,
         groupId: groupId,
+        ephemeralDurationSeconds: ephemeralSec,
+        expiresAt: expAt,
       );
 
       onGroupMessage?.call(chatMsg, groupId);
@@ -1260,6 +1502,130 @@ class P2pServer {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    /* Web Messenger & Dropzone Styles */
+    .dropzone {
+      border: 2px dashed rgba(120, 120, 128, 0.35);
+      border-radius: 14px;
+      padding: 16px 12px;
+      text-align: center;
+      cursor: pointer;
+      background: rgba(120, 120, 128, 0.05);
+      transition: all 0.2s ease;
+      margin-bottom: 12px;
+    }
+    .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(47, 129, 247, 0.12);
+      transform: scale(1.01);
+    }
+    .chat-thread {
+      height: 250px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 10px;
+      background: rgba(0, 0, 0, 0.15);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      margin-bottom: 12px;
+      scroll-behavior: smooth;
+    }
+    .chat-msg {
+      max-width: 82%;
+      display: flex;
+      flex-direction: column;
+    }
+    .chat-msg.in {
+      align-self: flex-start;
+    }
+    .chat-msg.out {
+      align-self: flex-end;
+    }
+    .msg-author {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 2px;
+      padding-left: 4px;
+    }
+    .chat-msg.out .msg-author {
+      text-align: right;
+      padding-right: 4px;
+    }
+    .msg-bubble {
+      padding: 9px 13px;
+      border-radius: 16px;
+      font-size: 13px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .chat-msg.in .msg-bubble {
+      background: rgba(120, 120, 128, 0.18);
+      color: var(--text-main);
+      border-bottom-left-radius: 4px;
+    }
+    .chat-msg.out .msg-bubble {
+      background: var(--accent-gradient);
+      color: #ffffff;
+      border-bottom-right-radius: 4px;
+      box-shadow: 0 2px 8px rgba(47, 129, 247, 0.25);
+    }
+    .msg-file-card {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 8px 10px;
+      border-radius: 10px;
+      margin-top: 4px;
+      font-size: 12px;
+    }
+    .msg-time {
+      font-size: 9px;
+      color: var(--text-muted);
+      margin-top: 2px;
+      padding: 0 4px;
+    }
+    .chat-msg.out .msg-time {
+      text-align: right;
+    }
+    .chat-input-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .chat-input {
+      flex: 1;
+      background: rgba(120, 120, 128, 0.12);
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
+      padding: 10px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .chat-input:focus {
+      border-color: var(--accent);
+    }
+    .chat-send-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: var(--accent-gradient);
+      border: none;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 3px 10px rgba(47, 129, 247, 0.3);
+      transition: transform 0.15s;
+    }
+    .chat-send-btn:active {
+      transform: scale(0.92);
+    }
   </style>
 </head>
 <body>
@@ -1278,13 +1644,64 @@ class P2pServer {
     </div>
 
     <div class="segmented-control">
-      <button class="segment-btn active" onclick="switchTab('connect')">Connect</button>
+      <button class="segment-btn active" onclick="switchTab('chat')">💬 Web Chat &amp; Drop</button>
+      <button class="segment-btn" onclick="switchTab('connect')">📱 App Link</button>
       <button class="segment-btn" onclick="switchTab('diagnostics')">Diagnostics</button>
-      <button class="segment-btn" onclick="switchTab('api')">API Endpoints</button>
+      <button class="segment-btn" onclick="switchTab('api')">API</button>
     </div>
 
-    <!-- TAB 1: CONNECT -->
-    <div id="tab-connect" class="tab-content active glass-card">
+    <!-- TAB 1: WEB CHAT & DROP -->
+    <div id="tab-chat" class="tab-content active glass-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <div>
+          <div style="font-weight:700; font-size:15px;">Live LAN Messenger</div>
+          <div style="font-size:11px; color:var(--text-muted);">Direct P2P link with $safeName</div>
+        </div>
+        <div id="ws-indicator" style="font-size:11px; font-weight:600; color:var(--green); display:flex; align-items:center; gap:5px;">
+          <span style="width:6px; height:6px; border-radius:50%; background:var(--green); display:inline-block;"></span> Live
+        </div>
+      </div>
+
+      <!-- Drag and Drop Dropzone -->
+      <div id="drop-zone" class="dropzone" onclick="document.getElementById('file-input').click()">
+        <input type="file" id="file-input" style="display:none" multiple onchange="handleFileSelect(this.files)">
+        <div style="font-size:24px; margin-bottom:4px;">📥</div>
+        <div style="font-size:13px; font-weight:600; color:var(--text-main);">Drop files here or click to send</div>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Instant zero-size-limit LAN transfer</div>
+      </div>
+      <div id="upload-progress-container" style="display:none; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:4px;">
+          <span id="upload-filename" style="color:var(--text-main); font-weight:600;">Uploading...</span>
+          <span id="upload-percent" style="color:var(--accent); font-weight:700;">0%</span>
+        </div>
+        <div style="background:rgba(120,120,128,0.2); border-radius:8px; height:6px; overflow:hidden;">
+          <div id="upload-progress-bar" style="background:var(--accent); width:0%; height:100%; transition:width 0.15s ease;"></div>
+        </div>
+      </div>
+
+      <!-- Chat Bubble Thread -->
+      <div id="chat-thread" class="chat-thread">
+        <div class="chat-msg in">
+          <div class="msg-author">$safeName</div>
+          <div class="msg-bubble">👋 Hello! You can chat and send files directly to my device over Wi-Fi without installing the app.</div>
+          <div class="msg-time">Just now</div>
+        </div>
+      </div>
+
+      <!-- Composer Input -->
+      <div class="chat-input-bar">
+        <input type="text" id="chat-input" class="chat-input" placeholder="Type a message to $safeName..." onkeydown="if(event.key==='Enter') sendWebMessage()">
+        <button class="chat-send-btn" onclick="sendWebMessage()" title="Send">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- TAB 2: CONNECT -->
+    <div id="tab-connect" class="tab-content glass-card">
       <div class="info-row">
         <span class="info-label">Peer Name</span>
         <span class="info-val">$safeName</span>
@@ -1311,7 +1728,7 @@ class P2pServer {
       <button onclick="copyText('$webUrl', 'Web URL copied to clipboard!')" class="btn btn-secondary">🌐 Copy Web Link</button>
     </div>
 
-    <!-- TAB 2: DIAGNOSTICS & PROBES -->
+    <!-- TAB 3: DIAGNOSTICS & PROBES -->
     <div id="tab-diagnostics" class="tab-content glass-card">
       <div class="stats-grid">
         <div class="stat-card">
@@ -1355,7 +1772,7 @@ class P2pServer {
       </div>
     </div>
 
-    <!-- TAB 3: REST & WS API -->
+    <!-- TAB 4: REST & WS API -->
     <div id="tab-api" class="tab-content glass-card">
       <div style="font-size: 13px; font-weight: 700; margin-bottom: 12px;">Node REST Endpoints</div>
 
@@ -1380,8 +1797,13 @@ class P2pServer {
       </div>
 
       <div class="endpoint-item">
-        <span><span class="method-tag">GET</span> /api/connect</span>
-        <button class="action-pill" onclick="callApi('/api/connect')">Execute</button>
+        <span><span class="method-tag">GET</span> /api/messages</span>
+        <button class="action-pill" onclick="callApi('/api/messages')">Execute</button>
+      </div>
+
+      <div class="endpoint-item">
+        <span><span class="method-tag">POST</span> /api/upload</span>
+        <span style="font-size: 11px; color: var(--text-muted);">Drop files</span>
       </div>
 
       <div class="endpoint-item">
@@ -1396,11 +1818,221 @@ class P2pServer {
   <div id="toast" class="toast"></div>
 
   <script>
+    let chatWs;
+    const wsUrl = '$wsUrl';
+    const seenMsgIds = new Set();
+
     function switchTab(tabId) {
       document.querySelectorAll('.segment-btn').forEach(btn => btn.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
       event.target.classList.add('active');
       document.getElementById('tab-' + tabId).classList.add('active');
+    }
+
+    function initChat() {
+      setupDropzone();
+      connectChatWs();
+      loadInitialMessages();
+      setInterval(pollMessages, 3000);
+    }
+
+    function connectChatWs() {
+      try {
+        chatWs = new WebSocket(wsUrl);
+        chatWs.onopen = function() {
+          const ind = document.getElementById('ws-indicator');
+          if (ind) ind.innerHTML = '<span style="width:6px; height:6px; border-radius:50%; background:var(--green); display:inline-block;"></span> Live';
+          chatWs.send(JSON.stringify({ type: 'HANDSHAKE' }));
+        };
+        chatWs.onmessage = function(event) {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'WEB_MSG') {
+              appendChatMessage(data);
+            }
+          } catch(e) {}
+        };
+        chatWs.onclose = function() {
+          const ind = document.getElementById('ws-indicator');
+          if (ind) ind.innerHTML = '<span style="width:6px; height:6px; border-radius:50%; background:#ff7b72; display:inline-block;"></span> Reconnecting';
+          setTimeout(connectChatWs, 3000);
+        };
+      } catch(e) {}
+    }
+
+    async function loadInitialMessages() {
+      try {
+        const res = await fetch('/api/messages');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.messages && Array.isArray(data.messages)) {
+            data.messages.forEach(msg => appendChatMessage(msg));
+          }
+        }
+      } catch(e) {}
+    }
+
+    async function pollMessages() {
+      if (chatWs && chatWs.readyState === WebSocket.OPEN) return;
+      try {
+        const res = await fetch('/api/messages');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.messages && Array.isArray(data.messages)) {
+            data.messages.forEach(msg => appendChatMessage(msg));
+          }
+        }
+      } catch(e) {}
+    }
+
+    function appendChatMessage(msg) {
+      if (msg.id && seenMsgIds.has(msg.id)) return;
+      if (msg.id) seenMsgIds.add(msg.id);
+
+      const thread = document.getElementById('chat-thread');
+      if (!thread) return;
+
+      const isOut = msg.isMe === true || msg.senderName === 'Web Visitor';
+      const msgDiv = document.createElement('div');
+      msgDiv.className = 'chat-msg ' + (isOut ? 'out' : 'in');
+
+      let fileHtml = '';
+      if (msg.fileUrl) {
+        fileHtml = '<div class="msg-file-card"><span>📎</span><span style="flex:1; overflow:hidden; text-overflow:ellipsis;">' + (msg.fileName || 'File') + '</span><a href="' + msg.fileUrl + '" download style="color:var(--accent); text-decoration:none; font-weight:700;">⬇️ Download</a></div>';
+      }
+
+      const timeStr = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : 'Now';
+
+      msgDiv.innerHTML =
+        '<div class="msg-author">' + (msg.senderName || 'Anonymous') + '</div>' +
+        '<div class="msg-bubble">' + escapeHtml(msg.content) + fileHtml + '</div>' +
+        '<div class="msg-time">' + timeStr + '</div>';
+
+      thread.appendChild(msgDiv);
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    async function sendWebMessage() {
+      const input = document.getElementById('chat-input');
+      const text = input.value.trim();
+      if (!text) return;
+
+      input.value = '';
+      const tempId = 'web_' + Date.now();
+      const localMsg = {
+        id: tempId,
+        senderName: 'You (Web)',
+        content: text,
+        isMe: true,
+        timestamp: new Date().toISOString()
+      };
+      appendChatMessage(localMsg);
+
+      if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+        chatWs.send(JSON.stringify({
+          type: 'WEB_MSG',
+          id: tempId,
+          content: text,
+          senderName: 'Web Visitor'
+        }));
+      } else {
+        try {
+          await fetch('/api/message', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({text: text, senderName: 'Web Visitor'})
+          });
+        } catch(e) {
+          showToast('Failed to send message: ' + e);
+        }
+      }
+    }
+
+    function setupDropzone() {
+      const dropZone = document.getElementById('drop-zone');
+      if (!dropZone) return;
+
+      ['dragenter', 'dragover'].forEach(name => {
+        dropZone.addEventListener(name, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.add('dragover');
+        });
+      });
+
+      ['dragleave', 'drop'].forEach(name => {
+        dropZone.addEventListener(name, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.remove('dragover');
+        });
+      });
+
+      dropZone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        handleFileSelect(files);
+      });
+    }
+
+    function handleFileSelect(files) {
+      if (!files || files.length === 0) return;
+      for (let i = 0; i < files.length; i++) {
+        uploadFile(files[i]);
+      }
+    }
+
+    function uploadFile(file) {
+      const progressContainer = document.getElementById('upload-progress-container');
+      const progressBar = document.getElementById('upload-progress-bar');
+      const progressPercent = document.getElementById('upload-percent');
+      const progressName = document.getElementById('upload-filename');
+
+      progressContainer.style.display = 'block';
+      progressName.textContent = file.name;
+      progressBar.style.width = '0%';
+      progressPercent.textContent = '0%';
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload', true);
+      xhr.setRequestHeader('x-filename', encodeURIComponent(file.name));
+
+      xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          progressBar.style.width = percent + '%';
+          progressPercent.textContent = percent + '%';
+        }
+      };
+
+      xhr.onload = function() {
+        progressContainer.style.display = 'none';
+        if (xhr.status === 200) {
+          showToast('File "' + file.name + '" uploaded successfully!');
+          appendChatMessage({
+            id: 'up_' + Date.now(),
+            senderName: 'You (Web)',
+            content: '📤 Uploaded file: ' + file.name,
+            isMe: true,
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          showToast('Upload failed with status ' + xhr.status);
+        }
+      };
+
+      xhr.onerror = function() {
+        progressContainer.style.display = 'none';
+        showToast('Network error during file upload');
+      };
+
+      xhr.send(file);
     }
 
     async function callApi(path) {
@@ -1437,7 +2069,7 @@ class P2pServer {
       }
     }
 
-    function testWsProbe(wsUrl) {
+    function testWsProbe(probeWsUrl) {
       const btn = document.getElementById('ws-probe-btn');
       const resEl = document.getElementById('ws-probe-result');
       btn.disabled = true;
@@ -1445,7 +2077,7 @@ class P2pServer {
       const start = performance.now();
       let socket;
       try {
-        socket = new WebSocket(wsUrl);
+        socket = new WebSocket(probeWsUrl);
         socket.onopen = function() {
           socket.send(JSON.stringify({ type: 'PING', ts: Date.now() }));
         };
@@ -1475,6 +2107,8 @@ class P2pServer {
       t.style.display = 'block';
       setTimeout(() => { t.style.display = 'none'; }, 2400);
     }
+
+    window.addEventListener('DOMContentLoaded', initChat);
   </script>
 </body>
 </html>''';

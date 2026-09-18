@@ -25,6 +25,9 @@ class _AppLockScreenState extends State<AppLockScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _attemptBiometrics();
+    });
   }
 
   @override
@@ -37,10 +40,29 @@ class _AppLockScreenState extends State<AppLockScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       final provider = Provider.of<ChatProvider>(context, listen: false);
-      provider.security.checkAutoLock();
+      provider.security.checkAutoLock().then((_) {
+        if (provider.security.isLocked) {
+          _attemptBiometrics();
+        }
+      });
     } else if (state == AppLifecycleState.paused) {
       final provider = Provider.of<ChatProvider>(context, listen: false);
       provider.security.updateActivity();
+    }
+  }
+
+  Future<void> _attemptBiometrics() async {
+    if (!mounted) return;
+    final provider = Provider.of<ChatProvider>(context, listen: false);
+    if (provider.security.isLocked && provider.security.settings.isBiometricEnabled) {
+      final success = await provider.security.authenticateWithBiometrics();
+      if (success && mounted) {
+        HapticFeedback.mediumImpact();
+        setState(() {
+          _enteredPin = '';
+          _errorMessage = null;
+        });
+      }
     }
   }
 
@@ -192,7 +214,17 @@ class _AppLockScreenState extends State<AppLockScreen>
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          const SizedBox(width: 72),
+                          if (provider.security.settings.isBiometricEnabled)
+                            IconButton(
+                              icon: const Icon(
+                                Icons.fingerprint_rounded,
+                                size: 34,
+                                color: TelegramTheme.primaryBlue,
+                              ),
+                              onPressed: _attemptBiometrics,
+                            )
+                          else
+                            const SizedBox(width: 72),
                           _buildKeypadButton(
                             '0',
                             isDark,

@@ -91,6 +91,46 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Ephemeral (Self-destructing) message timers: chatId -> durationSeconds
+  final Map<String, int> _chatEphemeralTimers = {};
+  Timer? _ephemeralSweeperTimer;
+
+  int? get activeChatEphemeralSeconds {
+    final chatId = _activeGroup?.id ?? _activePeer?.id;
+    if (chatId == null) return null;
+    return _chatEphemeralTimers[chatId];
+  }
+
+  void setChatEphemeralSeconds(int? seconds) {
+    final chatId = _activeGroup?.id ?? _activePeer?.id;
+    if (chatId == null) return;
+    if (seconds == null || seconds <= 0) {
+      _chatEphemeralTimers.remove(chatId);
+    } else {
+      _chatEphemeralTimers[chatId] = seconds;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _sweepExpiredMessages() async {
+    final expired = database.messages.where((m) => m.isExpired).toList();
+    if (expired.isEmpty) return;
+
+    for (final msg in expired) {
+      final localPath = msg.fileMetadata?.localPath;
+      if (localPath != null && localPath.isNotEmpty) {
+        try {
+          final f = File(localPath);
+          if (await f.exists()) {
+            await f.delete();
+          }
+        } catch (_) {}
+      }
+      await database.deleteMessage(msg.id);
+    }
+    notifyListeners();
+  }
+
   // Audio Call state
   CallStatus _callStatus = CallStatus.idle;
   Peer? _activeCallPeer;
@@ -295,6 +335,11 @@ class ChatProvider extends ChangeNotifier {
       await database.upsertPeer(peer);
       notifyListeners();
     };
+    server.onFileUploadedViaApi = (file, originalFileName) async {
+      if (_activePeer != null) {
+        await sendFile(file);
+      }
+    };
 
     // Hook client full-duplex callbacks (symmetrical event routing)
     client.onMessageReceived = _handleIncomingMessage;
@@ -346,6 +391,10 @@ class ChatProvider extends ChangeNotifier {
       platform: _platform,
     );
     await discoveryService.start();
+
+    // Start 1-second background sweeper for ephemeral message destruction & file shredding
+    _ephemeralSweeperTimer?.cancel();
+    _ephemeralSweeperTimer = Timer.periodic(const Duration(seconds: 1), (_) => _sweepExpiredMessages());
 
     _isInitialized = true;
     notifyListeners();
@@ -485,6 +534,9 @@ class ChatProvider extends ChangeNotifier {
       final group = _activeGroup!;
       if (!isGroupHostOnline) return; // Read-only if host & backup are disconnected
 
+      final ephemeralSec = activeChatEphemeralSeconds;
+      final expiresAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
+
       final messageId = _uuid.v4();
       final msg = ChatMessage(
         id: messageId,
@@ -498,6 +550,8 @@ class ChatProvider extends ChangeNotifier {
         status: MessageStatus.delivered,
         isGroup: true,
         groupId: group.id,
+        ephemeralDurationSeconds: ephemeralSec,
+        expiresAt: expiresAt,
       );
 
       await database.saveMessage(msg);
@@ -568,6 +622,9 @@ class ChatProvider extends ChangeNotifier {
     final replySender = _replyingToMessage?.senderName;
     _replyingToMessage = null;
 
+    final ephemeralSec = activeChatEphemeralSeconds;
+    final expiresAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
+
     final message = ChatMessage(
       id: messageId,
       chatId: peer.id,
@@ -581,11 +638,21 @@ class ChatProvider extends ChangeNotifier {
       replyToId: replyId,
       replyToText: replyText,
       replyToSenderName: replySender,
+      ephemeralDurationSeconds: ephemeralSec,
+      expiresAt: expiresAt,
     );
 
     // Save locally first (optimistic UI)
     await database.saveMessage(message);
     notifyListeners();
+
+    if (peer.id == 'web_visitor') {
+      server.broadcastWebMessage(content: text.trim(), senderName: _deviceName, isMe: true);
+      message.status = MessageStatus.delivered;
+      await database.saveMessage(message);
+      notifyListeners();
+      return;
+    }
 
     // Send over WebSocket to peer
     final sent = await client.sendMessage(
@@ -620,6 +687,9 @@ class ChatProvider extends ChangeNotifier {
         ext.endsWith('.bmp');
     final msgType = isImg ? MessageType.image : MessageType.file;
 
+    final ephemeralSec = activeChatEphemeralSeconds;
+    final expiresAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
+
     final chatMessage = ChatMessage(
       id: messageId,
       chatId: _activePeer!.id,
@@ -638,6 +708,8 @@ class ChatProvider extends ChangeNotifier {
         localPath: file.path,
         isCompleted: true,
       ),
+      ephemeralDurationSeconds: ephemeralSec,
+      expiresAt: expiresAt,
     );
 
     await database.saveMessage(chatMessage);
@@ -894,6 +966,9 @@ class ChatProvider extends ChangeNotifier {
     final fileName = p.basename(file.path);
     final fileSize = await file.length();
 
+    final ephemeralSec = activeChatEphemeralSeconds;
+    final expiresAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
+
     final chatMessage = ChatMessage(
       id: messageId,
       chatId: _activePeer!.id,
@@ -914,6 +989,8 @@ class ChatProvider extends ChangeNotifier {
         localPath: file.path,
         isCompleted: true,
       ),
+      ephemeralDurationSeconds: ephemeralSec,
+      expiresAt: expiresAt,
     );
 
     await database.saveMessage(chatMessage);
@@ -1772,6 +1849,7 @@ class ChatProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _ephemeralSweeperTimer?.cancel();
     _recordingTimer?.cancel();
     _callTimer?.cancel();
     for (final timer in _typingTimers.values) {

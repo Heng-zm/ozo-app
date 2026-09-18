@@ -98,6 +98,9 @@ class AppDatabase {
       await _db!.execute('PRAGMA synchronous=NORMAL;');
     } catch (_) {}
 
+    // Initialize ChaCha20-Poly1305 storage key for database encryption at rest
+    await _initStorageKey(dbDir);
+
     // Ensure auxiliary tables exist
     await _createAuxiliaryTables(_db!);
 
@@ -138,6 +141,12 @@ class AppDatabase {
         last_seen INTEGER NOT NULL
       );
     ''');
+    try {
+      await db.execute('ALTER TABLE messages ADD COLUMN ephemeral_seconds INTEGER;');
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE messages ADD COLUMN expires_at INTEGER;');
+    } catch (_) {}
   }
 
   Future<void> _onUpgrade(sqflite.Database db, int oldVersion, int newVersion) async {
@@ -256,7 +265,9 @@ class AppDatabase {
         reply_to_id TEXT,
         reply_to_text TEXT,
         reply_to_sender_name TEXT,
-        reactions_json TEXT
+        reactions_json TEXT,
+        ephemeral_seconds INTEGER,
+        expires_at INTEGER
       );
     ''');
 
@@ -543,8 +554,63 @@ class AppDatabase {
   }
 
   // ---------------------------------------------------------------------------
-  // Messages & Full-Text Search (FTS)
+  // Messages & Database Encryption at Rest
   // ---------------------------------------------------------------------------
+
+  crypto_pkg.SecretKey? _storageKey;
+  final crypto_pkg.Cipher _storageAead = crypto_pkg.Chacha20.poly1305Aead();
+
+  Future<void> _initStorageKey(Directory dbDir) async {
+    try {
+      final keyFile = File(p.join(dbDir.path, '.storage_vault.key'));
+      List<int> rawBytes;
+      if (await keyFile.exists()) {
+        try {
+          final b64 = (await keyFile.readAsString()).trim();
+          rawBytes = base64Decode(b64);
+        } catch (_) {
+          rawBytes = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+          await keyFile.writeAsString(base64Encode(rawBytes));
+        }
+      } else {
+        rawBytes = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+        await keyFile.writeAsString(base64Encode(rawBytes));
+      }
+      _storageKey = crypto_pkg.SecretKey(rawBytes);
+    } catch (_) {}
+  }
+
+  Future<String> _encryptContent(String plaintext) async {
+    if (_storageKey == null || plaintext.isEmpty) return plaintext;
+    try {
+      final bytes = utf8.encode(plaintext);
+      final secretBox = await _storageAead.encrypt(bytes, secretKey: _storageKey!);
+      final nonceB64 = base64Encode(secretBox.nonce);
+      final macB64 = base64Encode(secretBox.mac.bytes);
+      final cipherB64 = base64Encode(secretBox.cipherText);
+      return 'enc:v1:$nonceB64:$macB64:$cipherB64';
+    } catch (_) {
+      return plaintext;
+    }
+  }
+
+  Future<String> _decryptContent(String text) async {
+    if (!text.startsWith('enc:v1:') || _storageKey == null) {
+      return text;
+    }
+    try {
+      final parts = text.split(':');
+      if (parts.length != 5) return text;
+      final nonce = base64Decode(parts[2]);
+      final mac = crypto_pkg.Mac(base64Decode(parts[3]));
+      final cipherText = base64Decode(parts[4]);
+      final secretBox = crypto_pkg.SecretBox(cipherText, nonce: nonce, mac: mac);
+      final decryptedBytes = await _storageAead.decrypt(secretBox, secretKey: _storageKey!);
+      return utf8.decode(decryptedBytes);
+    } catch (_) {
+      return text;
+    }
+  }
 
   Future<void> _loadMessagesFromDb() async {
     if (_db == null) return;
@@ -555,7 +621,11 @@ class AppDatabase {
     _messageLruCache.clear();
     _messageBloomFilter.reset();
     for (final row in rows) {
-      final msg = _rowToChatMessage(row);
+      final msg = await _rowToChatMessage(row);
+      if (msg.isExpired) {
+        _db?.delete('messages', where: 'id = ?', whereArgs: [msg.id]);
+        continue;
+      }
       _messageIndexById[msg.id] = _messages.length;
       _messages.add(msg);
       _messagesByChatId.putIfAbsent(msg.chatId, () => []).add(msg);
@@ -564,7 +634,7 @@ class AppDatabase {
     }
   }
 
-  ChatMessage _rowToChatMessage(Map<String, dynamic> row) {
+  Future<ChatMessage> _rowToChatMessage(Map<String, dynamic> row) async {
     Map<String, List<String>> reactions = {};
     if (row['reactions_json'] != null) {
       try {
@@ -594,13 +664,17 @@ class AppDatabase {
       } catch (_) {}
     }
 
+    final rawContent = row['content'] as String;
+    final decryptedContent = await _decryptContent(rawContent);
+    final expAtMs = row['expires_at'] as int?;
+
     return ChatMessage(
       id: row['id'] as String,
       chatId: row['chat_id'] as String,
       senderId: row['sender_id'] as String,
       senderName: row['sender_name'] as String,
       recipientId: row['recipient_id'] as String,
-      content: row['content'] as String,
+      content: decryptedContent,
       type: MessageType.values.firstWhere(
         (e) => e.name == row['type'],
         orElse: () => MessageType.text,
@@ -619,17 +693,20 @@ class AppDatabase {
       replyToText: row['reply_to_text'] as String?,
       replyToSenderName: row['reply_to_sender_name'] as String?,
       reactions: reactions,
+      ephemeralDurationSeconds: row['ephemeral_seconds'] as int?,
+      expiresAt: expAtMs != null ? DateTime.fromMillisecondsSinceEpoch(expAtMs) : null,
     );
   }
 
-  Map<String, dynamic> _chatMessageToRow(ChatMessage message) {
+  Future<Map<String, dynamic>> _chatMessageToRow(ChatMessage message) async {
+    final encryptedContent = await _encryptContent(message.content);
     return {
       'id': message.id,
       'chat_id': message.chatId,
       'sender_id': message.senderId,
       'sender_name': message.senderName,
       'recipient_id': message.recipientId,
-      'content': message.content,
+      'content': encryptedContent,
       'type': message.type.name,
       'timestamp': message.timestamp.millisecondsSinceEpoch,
       'status': message.status.name,
@@ -646,6 +723,8 @@ class AppDatabase {
       'reply_to_sender_name': message.replyToSenderName,
       'reactions_json':
           message.reactions.isNotEmpty ? jsonEncode(message.reactions) : null,
+      'ephemeral_seconds': message.ephemeralDurationSeconds,
+      'expires_at': message.expiresAt?.millisecondsSinceEpoch,
     };
   }
 
@@ -670,14 +749,8 @@ class AppDatabase {
     }
 
     if (_db != null) {
-      final row = _chatMessageToRow(message);
+      final row = await _chatMessageToRow(message);
       await _db!.insert('messages', row, conflictAlgorithm: sqflite.ConflictAlgorithm.replace);
-      try {
-        await _db!.execute(
-          'INSERT OR REPLACE INTO messages_fts (id, chat_id, content) VALUES (?, ?, ?);',
-          [message.id, message.chatId, message.content],
-        );
-      } catch (_) {}
     }
   }
 
@@ -808,51 +881,23 @@ class AppDatabase {
       offset: offset,
     );
 
-    return rows.map((r) => _rowToChatMessage(r)).toList().reversed.toList();
+    final result = <ChatMessage>[];
+    for (final r in rows) {
+      result.add(await _rowToChatMessage(r));
+    }
+    return result.reversed.toList();
   }
 
-  /// Instant Full-Text Search across all conversation histories
+  /// Instant Search across all conversation histories
   Future<List<ChatMessage>> searchMessages(String query) async {
     final trimmed = query.trim();
     if (trimmed.isEmpty) return [];
 
-    if (_db == null) {
-      final q = trimmed.toLowerCase();
-      return _messages
-          .where((m) => m.content.toLowerCase().contains(q))
-          .take(50)
-          .toList();
-    }
-
-    final sanitizedFts = trimmed.replaceAll(RegExp(r'["*^:()\[\]{}]'), ' ').trim();
-    if (sanitizedFts.isNotEmpty) {
-      try {
-        // First try FTS5 virtual table
-        final ftsRows = await _db!.rawQuery(
-          '''
-          SELECT m.* FROM messages m
-          JOIN messages_fts fts ON m.id = fts.id
-          WHERE messages_fts MATCH ?
-          ORDER BY m.timestamp DESC LIMIT 50;
-          ''',
-          ['"$sanitizedFts"*'],
-        );
-        if (ftsRows.isNotEmpty) {
-          return ftsRows.map((r) => _rowToChatMessage(r)).toList();
-        }
-      } catch (_) {
-        // Fallback to indexed LIKE query
-      }
-    }
-
-    final rows = await _db!.query(
-      'messages',
-      where: 'content LIKE ?',
-      whereArgs: ['%$trimmed%'],
-      orderBy: 'timestamp DESC',
-      limit: 50,
-    );
-    return rows.map((r) => _rowToChatMessage(r)).toList();
+    final q = trimmed.toLowerCase();
+    return _messages
+        .where((m) => m.content.toLowerCase().contains(q))
+        .take(50)
+        .toList();
   }
 
   // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../database/models.dart';
 
@@ -13,6 +14,8 @@ class SecurityService extends ChangeNotifier {
   factory SecurityService() => _instance;
   factory SecurityService.isolated() => SecurityService._internal();
   SecurityService._internal();
+
+  final LocalAuthentication _localAuth = LocalAuthentication();
 
   static final _pbkdf2 = Pbkdf2(
     macAlgorithm: Hmac.sha256(),
@@ -36,6 +39,42 @@ class SecurityService extends ChangeNotifier {
   bool get isLocked => _isLocked;
   bool get isPinConfigured => _settings.isPinEnabled && _settings.pinHash.isNotEmpty;
   SecuritySettings get settings => _settings;
+
+  /// Checks whether biometric hardware (Face ID, Touch ID, Fingerprint) is supported and enrolled
+  Future<bool> isBiometricsAvailable() async {
+    try {
+      final canCheck = await _localAuth.canCheckBiometrics;
+      final isSupported = await _localAuth.isDeviceSupported();
+      return canCheck || isSupported;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Prompts native Face ID, Touch ID, or biometric authentication
+  Future<bool> authenticateWithBiometrics({String reason = 'Unlock OZO App to access chats'}) async {
+    if (!_settings.isBiometricEnabled) return false;
+    try {
+      final canAuth = await isBiometricsAvailable();
+      if (!canAuth) return false;
+
+      final success = await _localAuth.authenticate(
+        localizedReason: reason,
+        options: const AuthenticationOptions(
+          stickyAuth: true,
+          biometricOnly: true,
+          useErrorDialogs: true,
+        ),
+      );
+      if (success) {
+        unlockBiometric();
+        return true;
+      }
+    } catch (e) {
+      if (kDebugMode) print('[SecurityService] Biometric auth error: $e');
+    }
+    return false;
+  }
 
   Future<void> initialize({String? prefix}) async {
     _prefix = prefix ?? '';

@@ -295,6 +295,8 @@ class P2pClient {
     final replyToId = msg['replyToId'] as String?;
     final replyToText = msg['replyToText'] as String?;
     final replyToSenderName = msg['replyToSenderName'] as String?;
+    final ephemeralSec = msg['ephemeralSeconds'] as int?;
+    final expAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
 
     final chatMsg = ChatMessage(
       id: messageId,
@@ -312,6 +314,8 @@ class P2pClient {
       replyToId: replyToId,
       replyToText: replyToText,
       replyToSenderName: replyToSenderName,
+      ephemeralDurationSeconds: ephemeralSec,
+      expiresAt: expAt,
     );
 
     if (socket.readyState == WebSocket.open) {
@@ -370,6 +374,8 @@ class P2pClient {
       final senderName = msg['senderName'] as String? ?? 'Group Member';
       final content = msg['content'] as String;
       final timestamp = DateTime.fromMillisecondsSinceEpoch(msg['ts'] as int);
+      final ephemeralSec = msg['ephemeralSeconds'] as int?;
+      final expAt = ephemeralSec != null ? DateTime.now().add(Duration(seconds: ephemeralSec)) : null;
 
       final chatMsg = ChatMessage(
         id: id,
@@ -383,6 +389,8 @@ class P2pClient {
         status: MessageStatus.delivered,
         isGroup: true,
         groupId: groupId,
+        ephemeralDurationSeconds: ephemeralSec,
+        expiresAt: expAt,
       );
 
       onGroupMessage?.call(chatMsg, groupId);
@@ -418,6 +426,7 @@ class P2pClient {
       'replyToId': message.replyToId,
       'replyToText': message.replyToText,
       'replyToSenderName': message.replyToSenderName,
+      'ephemeralSeconds': message.ephemeralDurationSeconds,
     });
 
     try {
@@ -540,6 +549,7 @@ class P2pClient {
       'senderName': deviceName,
       'content': message.content,
       'ts': message.timestamp.millisecondsSinceEpoch,
+      'ephemeralSeconds': message.ephemeralDurationSeconds,
     });
 
     try {
@@ -568,6 +578,7 @@ class P2pClient {
       'senderName': message.senderName,
       'content': message.content,
       'ts': message.timestamp.millisecondsSinceEpoch,
+      'ephemeralSeconds': message.ephemeralDurationSeconds,
     });
 
     try {

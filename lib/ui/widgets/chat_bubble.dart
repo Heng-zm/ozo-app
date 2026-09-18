@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -193,6 +194,14 @@ class ChatBubble extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
+                      if (message.isEphemeral) ...[
+                        _EphemeralCountdownBadge(
+                          expiresAt: message.expiresAt,
+                          isOutgoing: isOutgoing,
+                          isDark: isDark,
+                        ),
+                        const SizedBox(width: 5),
+                      ],
                       Text(
                         timeStr,
                         style: TextStyle(
@@ -994,3 +1003,81 @@ class _MapGridPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
+
+class _EphemeralCountdownBadge extends StatefulWidget {
+  final DateTime? expiresAt;
+  final bool isOutgoing;
+  final bool isDark;
+
+  const _EphemeralCountdownBadge({
+    required this.expiresAt,
+    required this.isOutgoing,
+    required this.isDark,
+  });
+
+  @override
+  State<_EphemeralCountdownBadge> createState() => _EphemeralCountdownBadgeState();
+}
+
+class _EphemeralCountdownBadgeState extends State<_EphemeralCountdownBadge> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.expiresAt == null) return const SizedBox.shrink();
+
+    final remaining = widget.expiresAt!.difference(DateTime.now()).inSeconds;
+    final displaySec = remaining > 0 ? remaining : 0;
+
+    String label;
+    if (displaySec < 60) {
+      label = '${displaySec}s';
+    } else if (displaySec < 3600) {
+      label = '${displaySec ~/ 60}m';
+    } else {
+      label = '${displaySec ~/ 3600}h';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+      decoration: BoxDecoration(
+        color: widget.isOutgoing
+            ? Colors.white.withValues(alpha: 0.2)
+            : (widget.isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.06)),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('🔥', style: TextStyle(fontSize: 9)),
+          const SizedBox(width: 2),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: widget.isOutgoing
+                  ? Colors.white
+                  : (widget.isDark ? Colors.white70 : Colors.black87),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
