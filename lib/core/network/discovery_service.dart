@@ -75,14 +75,20 @@ class DiscoveryService {
         // Silently ignore multicast denial on iOS/Android
       }
 
-      _socket?.listen((RawSocketEvent event) {
-        if (event == RawSocketEvent.read) {
-          final datagram = _socket?.receive();
-          if (datagram != null) {
-            _handleDatagram(datagram);
+      _socket?.listen(
+        (RawSocketEvent event) {
+          if (event == RawSocketEvent.read) {
+            final datagram = _socket?.receive();
+            if (datagram != null) {
+              _handleDatagram(datagram);
+            }
           }
-        }
-      });
+        },
+        onError: (e) {
+          // Socket error handled gracefully
+        },
+        cancelOnError: false,
+      );
 
       // Send rapid 3-pulse burst for sub-second discovery
       burstDiscovery();
@@ -105,14 +111,20 @@ class DiscoveryService {
           reuseAddress: true,
         );
         _socket?.broadcastEnabled = true;
-        _socket?.listen((RawSocketEvent event) {
-          if (event == RawSocketEvent.read) {
-            final datagram = _socket?.receive();
-            if (datagram != null) {
-              _handleDatagram(datagram);
+        _socket?.listen(
+          (RawSocketEvent event) {
+            if (event == RawSocketEvent.read) {
+              final datagram = _socket?.receive();
+              if (datagram != null) {
+                _handleDatagram(datagram);
+              }
             }
-          }
-        });
+          },
+          onError: (e) {
+            // Socket error handled gracefully
+          },
+          cancelOnError: false,
+        );
 
         burstDiscovery();
         _beaconTimer = Timer.periodic(AppConstants.beaconInterval, (_) {

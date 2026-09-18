@@ -207,7 +207,13 @@ class P2pServer {
     _server = boundServer;
     _actualPort = _server!.port;
     _startedAt = DateTime.now();
-    _server!.listen(_handleHttpRequest);
+    _server!.listen(
+      _handleHttpRequest,
+      onError: (error, stackTrace) {
+        if (kDebugMode) print('[P2pServer] Server socket error: $error');
+      },
+      cancelOnError: false,
+    );
 
     return _actualPort;
   }

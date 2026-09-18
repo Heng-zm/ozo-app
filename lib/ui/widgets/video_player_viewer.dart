@@ -21,7 +21,7 @@ class VideoPlayerViewer extends StatefulWidget {
 }
 
 class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
-  late VideoPlayerController _controller;
+  VideoPlayerController? _controller;
   bool _isInitialized = false;
   bool _showControls = true;
   Timer? _controlsTimer;
@@ -29,6 +29,7 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
   bool _isLandscape = false;
   String? _seekOverlayText;
   Timer? _seekOverlayTimer;
+  String? _errorMessage;
 
   final List<double> _speeds = [0.75, 1.0, 1.25, 1.5, 2.0];
 
@@ -39,33 +40,45 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
   }
 
   Future<void> _initPlayer() async {
-    final file = File(widget.videoPath);
-    if (await file.exists()) {
-      _controller = VideoPlayerController.file(file);
-    } else {
-      _controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoPath));
-    }
-
     try {
-      await _controller.initialize();
+      final file = File(widget.videoPath);
+      final VideoPlayerController controller;
+      if (await file.exists()) {
+        controller = VideoPlayerController.file(file);
+      } else {
+        controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoPath));
+      }
+      _controller = controller;
+
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
       setState(() {
         _isInitialized = true;
+        _errorMessage = null;
       });
-      _controller.play();
+      controller.play();
       _startControlsTimer();
+
+      controller.addListener(() {
+        if (mounted) setState(() {});
+      });
     } catch (e) {
       debugPrint('[VideoPlayerViewer] initialize error: $e');
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Could not load video: $e';
+        });
+      }
     }
-
-    _controller.addListener(() {
-      if (mounted) setState(() {});
-    });
   }
 
   void _startControlsTimer() {
     _controlsTimer?.cancel();
     _controlsTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted && _controller.value.isPlaying) {
+      if (mounted && (_controller?.value.isPlaying ?? false)) {
         setState(() {
           _showControls = false;
         });
@@ -83,25 +96,29 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
   }
 
   void _togglePlayPause() {
+    final controller = _controller;
+    if (controller == null || !_isInitialized) return;
     setState(() {
-      if (_controller.value.isPlaying) {
-        _controller.pause();
+      if (controller.value.isPlaying) {
+        controller.pause();
         _showControls = true;
         _controlsTimer?.cancel();
       } else {
-        _controller.play();
+        controller.play();
         _startControlsTimer();
       }
     });
   }
 
   void _seekRelative(Duration delta) {
-    final current = _controller.value.position;
-    final total = _controller.value.duration;
+    final controller = _controller;
+    if (controller == null || !_isInitialized) return;
+    final current = controller.value.position;
+    final total = controller.value.duration;
     var target = current + delta;
     if (target < Duration.zero) target = Duration.zero;
     if (target > total) target = total;
-    _controller.seekTo(target);
+    controller.seekTo(target);
 
     final seconds = delta.inSeconds;
     final text = seconds > 0 ? '+$seconds s' : '$seconds s';
@@ -124,10 +141,12 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
   }
 
   void _cycleSpeed() {
+    final controller = _controller;
+    if (controller == null || !_isInitialized) return;
     final currentIndex = _speeds.indexOf(_playbackSpeed);
     final nextIndex = (currentIndex + 1) % _speeds.length;
     final nextSpeed = _speeds[nextIndex];
-    _controller.setPlaybackSpeed(nextSpeed);
+    controller.setPlaybackSpeed(nextSpeed);
     setState(() {
       _playbackSpeed = nextSpeed;
     });
@@ -163,7 +182,7 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
   void dispose() {
     _controlsTimer?.cancel();
     _seekOverlayTimer?.cancel();
-    _controller.dispose();
+    _controller?.dispose();
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
@@ -182,11 +201,42 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
           alignment: Alignment.center,
           children: [
             // Video Surface
-            if (_isInitialized)
+            if (_errorMessage != null)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(CupertinoIcons.exclamationmark_triangle_fill,
+                          color: Colors.amber, size: 48),
+                      const SizedBox(height: 16),
+                      Text(
+                        _errorMessage!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70, fontSize: 14),
+                      ),
+                      const SizedBox(height: 16),
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          setState(() {
+                            _errorMessage = null;
+                            _isInitialized = false;
+                          });
+                          _initPlayer();
+                        },
+                        icon: const Icon(CupertinoIcons.refresh),
+                        label: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else if (_isInitialized && _controller != null)
               Center(
                 child: AspectRatio(
-                  aspectRatio: _controller.value.aspectRatio,
-                  child: VideoPlayer(_controller),
+                  aspectRatio: _controller!.value.aspectRatio,
+                  child: VideoPlayer(_controller!),
                 ),
               )
             else
@@ -308,7 +358,7 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
                     IconButton(
                       iconSize: 64,
                       icon: Icon(
-                        _controller.value.isPlaying
+                        (_controller?.value.isPlaying ?? false)
                             ? CupertinoIcons.pause_circle_fill
                             : CupertinoIcons.play_circle_fill,
                         color: Colors.white.withValues(alpha: 0.9),
@@ -322,9 +372,9 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (_isInitialized)
+                          if (_isInitialized && _controller != null)
                             VideoProgressIndicator(
-                              _controller,
+                              _controller!,
                               allowScrubbing: true,
                               colors: const VideoProgressColors(
                                 playedColor: Color(0xFF007AFF),
@@ -337,11 +387,11 @@ class _VideoPlayerViewerState extends State<VideoPlayerViewer> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
-                                _formatDuration(_controller.value.position),
+                                _formatDuration(_controller?.value.position ?? Duration.zero),
                                 style: const TextStyle(color: Colors.white70, fontSize: 12),
                               ),
                               Text(
-                                _formatDuration(_controller.value.duration),
+                                _formatDuration(_controller?.value.duration ?? Duration.zero),
                                 style: const TextStyle(color: Colors.white70, fontSize: 12),
                               ),
                             ],

@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
@@ -23,6 +24,17 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   int _currentPage = 1;
   int _pageCount = 1;
   bool _isLoading = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    final file = File(widget.filePath);
+    if (!file.existsSync()) {
+      _errorMessage = 'PDF file not found at: ${widget.filePath}';
+      _isLoading = false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,7 +52,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
-            if (!_isLoading)
+            if (!_isLoading && _errorMessage == null)
               Text(
                 'Page $_currentPage of $_pageCount',
                 style: TextStyle(
@@ -67,33 +79,84 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           ),
         ],
       ),
-      body: Stack(
-        children: [
-          PdfViewer.file(
-            widget.filePath,
-            controller: _pdfController,
-            params: PdfViewerParams(
-              onViewerReady: (document, controller) {
-                setState(() {
-                  _pageCount = document.pages.length;
-                  _isLoading = false;
-                });
-              },
-              onPageChanged: (pageNumber) {
-                if (pageNumber != null) {
-                  setState(() {
-                    _currentPage = pageNumber;
-                  });
-                }
-              },
+      body: _errorMessage != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(CupertinoIcons.exclamationmark_triangle_fill,
+                        color: Colors.amber, size: 48),
+                    const SizedBox(height: 16),
+                    Text(
+                      _errorMessage!,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: isDark ? Colors.white70 : Colors.black87,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(CupertinoIcons.arrow_left),
+                      label: const Text('Go Back'),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : Stack(
+              children: [
+                PdfViewer.file(
+                  widget.filePath,
+                  controller: _pdfController,
+                  params: PdfViewerParams(
+                    errorBannerBuilder: (context, error, stackTrace, documentRef) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24.0),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(CupertinoIcons.exclamationmark_triangle_fill,
+                                  color: Colors.amber, size: 48),
+                              const SizedBox(height: 12),
+                              Text(
+                                'Error loading document: $error',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: isDark ? Colors.white70 : Colors.black87,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                    onViewerReady: (document, controller) {
+                      setState(() {
+                        _pageCount = document.pages.length;
+                        _isLoading = false;
+                      });
+                    },
+                    onPageChanged: (pageNumber) {
+                      if (pageNumber != null) {
+                        setState(() {
+                          _currentPage = pageNumber;
+                        });
+                      }
+                    },
+                  ),
+                ),
+                if (_isLoading)
+                  const Center(
+                    child: CupertinoActivityIndicator(radius: 16),
+                  ),
+              ],
             ),
-          ),
-          if (_isLoading)
-            const Center(
-              child: CupertinoActivityIndicator(radius: 16),
-            ),
-        ],
-      ),
       bottomNavigationBar: !_isLoading && _pageCount > 1
           ? Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

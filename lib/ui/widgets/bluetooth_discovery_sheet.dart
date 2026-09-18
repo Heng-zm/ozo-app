@@ -29,6 +29,7 @@ class BluetoothDiscoverySheet extends StatefulWidget {
 class _BluetoothDiscoverySheetState extends State<BluetoothDiscoverySheet> {
   StreamSubscription? _peersSub;
   StreamSubscription? _hotspotOfferSub;
+  StreamSubscription? _statusSub;
   List<BlePeer> _peers = [];
   bool _isScanning = false;
   String _statusText = 'Ready';
@@ -51,7 +52,7 @@ class _BluetoothDiscoverySheetState extends State<BluetoothDiscoverySheet> {
       }
     });
 
-    provider.bleService.statusStream.listen((status) {
+    _statusSub = provider.bleService.statusStream.listen((status) {
       if (mounted) {
         setState(() {
           _statusText = status;
@@ -188,6 +189,7 @@ class _BluetoothDiscoverySheetState extends State<BluetoothDiscoverySheet> {
   void dispose() {
     _peersSub?.cancel();
     _hotspotOfferSub?.cancel();
+    _statusSub?.cancel();
     _ssidController.dispose();
     _passwordController.dispose();
     super.dispose();

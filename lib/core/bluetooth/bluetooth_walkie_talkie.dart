@@ -36,6 +36,7 @@ class BluetoothWalkieTalkie {
   Timer? _amplitudeTimer;
   String? _currentRecordingPath;
   StreamSubscription<BlePacket>? _blePacketSub;
+  StreamSubscription? _playerCompleteSub;
 
   void init(BleService bleService) {
     _blePacketSub?.cancel();
@@ -45,7 +46,8 @@ class BluetoothWalkieTalkie {
       }
     });
 
-    _player.onPlayerComplete.listen((_) {
+    _playerCompleteSub?.cancel();
+    _playerCompleteSub = _player.onPlayerComplete.listen((_) {
       _setState(WalkieTalkieState.idle);
     });
   }
@@ -186,6 +188,7 @@ class BluetoothWalkieTalkie {
 
   void dispose() {
     _blePacketSub?.cancel();
+    _playerCompleteSub?.cancel();
     _amplitudeTimer?.cancel();
     _recorder.dispose();
     _player.dispose();

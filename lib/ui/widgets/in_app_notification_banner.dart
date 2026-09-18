@@ -65,7 +65,9 @@ class InAppNotificationBanner {
   static void dismiss() {
     _dismissTimer?.cancel();
     _dismissTimer = null;
-    _currentEntry?.remove();
+    if (_currentEntry?.mounted == true) {
+      _currentEntry?.remove();
+    }
     _currentEntry = null;
   }
 }
@@ -123,8 +125,12 @@ class _DynamicIslandBannerWidgetState extends State<_DynamicIslandBannerWidget>
   }
 
   void _dismissWithAnim() async {
-    await _animController.reverse();
-    widget.onDismiss();
+    try {
+      await _animController.reverse();
+    } catch (_) {}
+    if (mounted) {
+      widget.onDismiss();
+    }
   }
 
   @override
