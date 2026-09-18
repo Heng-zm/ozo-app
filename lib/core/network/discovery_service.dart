@@ -16,6 +16,7 @@ class DiscoveryService {
 
   RawDatagramSocket? _socket;
   Timer? _beaconTimer;
+  Timer? _interfaceRefreshTimer;
   final _peerDiscoveredController = StreamController<Peer>.broadcast();
 
   final List<String> _directedBroadcastAddresses = [];
@@ -38,6 +39,17 @@ class DiscoveryService {
   void updateIdentity({String? deviceId, String? deviceName}) {
     if (deviceId != null) this.deviceId = deviceId;
     if (deviceName != null) this.deviceName = deviceName;
+  }
+
+  /// Broadcasts a 3-pulse burst (0ms, 250ms, 600ms) for sub-second peer discovery
+  void burstDiscovery() {
+    broadcastBeacon();
+    Future.delayed(const Duration(milliseconds: 250), () {
+      if (_socket != null) broadcastBeacon();
+    });
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (_socket != null) broadcastBeacon();
+    });
   }
 
   /// Starts listening for UDP beacons and broadcasts periodic announcements
@@ -72,12 +84,17 @@ class DiscoveryService {
         }
       });
 
-      // Send immediate probe and beacon
-      broadcastBeacon();
+      // Send rapid 3-pulse burst for sub-second discovery
+      burstDiscovery();
 
       // Periodically broadcast beacon
       _beaconTimer = Timer.periodic(AppConstants.beaconInterval, (_) {
         broadcastBeacon();
+      });
+
+      // Refresh network interfaces periodically in case user switches Wi-Fi/Hotspot
+      _interfaceRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+        _resolveDirectedBroadcastAddresses();
       });
     } catch (e) {
       // Ephemeral fallback port if default is bound
@@ -97,9 +114,12 @@ class DiscoveryService {
           }
         });
 
-        broadcastBeacon();
+        burstDiscovery();
         _beaconTimer = Timer.periodic(AppConstants.beaconInterval, (_) {
           broadcastBeacon();
+        });
+        _interfaceRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+          _resolveDirectedBroadcastAddresses();
         });
       } catch (_) {}
     }
@@ -129,13 +149,17 @@ class DiscoveryService {
         }
       }
 
-      // Add direct routerless hotspot subnets (Android, iOS, Windows, Wi-Fi Direct)
+      // Add direct routerless hotspot subnets (Android, iOS, Windows, Wi-Fi Direct, LTE MiFi)
       const directHotspotSubnets = [
         '192.168.43.255',  // Android Mobile Hotspot
         '172.20.10.255',   // iOS Personal Hotspot
         '192.168.137.255', // Windows Mobile Hotspot
         '192.168.49.255',  // Android Wi-Fi Direct
         '10.0.0.255',      // Ad-hoc portable hotspot
+        '192.168.8.255',   // 4G/5G portable LTE MiFi routers
+        '192.168.1.255',   // Standard LAN 1
+        '192.168.0.255',   // Standard LAN 0
+        '192.168.2.255',   // Standard LAN 2
       ];
       for (final subnet in directHotspotSubnets) {
         if (!_directedBroadcastAddresses.contains(subnet)) {
@@ -253,6 +277,8 @@ class DiscoveryService {
   Future<void> stop() async {
     _beaconTimer?.cancel();
     _beaconTimer = null;
+    _interfaceRefreshTimer?.cancel();
+    _interfaceRefreshTimer = null;
     _socket?.close();
     _socket = null;
   }

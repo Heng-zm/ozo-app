@@ -57,6 +57,21 @@ class P2pServer {
 
   DateTime? get startedAt => _startedAt;
 
+  /// Returns the active open WebSocket for a peer if connected
+  WebSocket? getActiveSocket(String peerId) {
+    final socket = _activeSockets[peerId];
+    if (socket != null && socket.readyState == WebSocket.open) {
+      return socket;
+    }
+    if (socket != null) {
+      _activeSockets.remove(peerId);
+    }
+    return null;
+  }
+
+  /// Checks whether an open active incoming connection exists for a peer
+  bool hasActiveSocket(String peerId) => getActiveSocket(peerId) != null;
+
   String get safetyFingerprint {
     final pk = cryptoService.publicKeyBase64 ?? '';
     if (pk.isEmpty) return '0000-0000';
@@ -384,6 +399,19 @@ class P2pServer {
           }
 
           switch (type) {
+            case 'HANDSHAKE':
+              if (socket.readyState == WebSocket.open) {
+                socket.add(jsonEncode({
+                  'type': 'HANDSHAKE_ACK',
+                  'senderId': deviceId,
+                  'senderName': deviceName,
+                  'senderPubKey': cryptoService.publicKeyBase64,
+                  'ts': DateTime.now().millisecondsSinceEpoch,
+                }));
+              }
+              break;
+            case 'HANDSHAKE_ACK':
+              break;
             case 'MSG':
               await _handleIncomingChatMessage(msg, remoteIp);
               break;

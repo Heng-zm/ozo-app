@@ -261,11 +261,12 @@ class ChatProvider extends ChangeNotifier {
     );
     _serverPort = await server.start();
 
-    // 4. Initialize P2P Client
+    // 4. Initialize P2P Client with bidirectional socket reuse
     client = P2pClient(
       deviceId: _deviceId,
       deviceName: _deviceName,
       cryptoService: cryptoService,
+      serverSocketProvider: (peerId) => server.getActiveSocket(peerId),
     );
 
     // 5. Initialize File Transfer Manager
@@ -295,12 +296,21 @@ class ChatProvider extends ChangeNotifier {
       notifyListeners();
     };
 
-    // Hook client duplex callbacks
+    // Hook client full-duplex callbacks (symmetrical event routing)
+    client.onMessageReceived = _handleIncomingMessage;
+    client.onFileOffered = _handleIncomingFileOffer;
     client.onDeliveryReceipt = _handleDeliveryReceipt;
     client.onTyping = _handleTyping;
+    client.onGroupInvite = _handleIncomingGroupInvite;
+    client.onGroupMessage = _handleIncomingGroupMessage;
+    client.onGroupMigrated = _handleGroupMigrated;
     client.onReactionReceived = _handleIncomingReaction;
     client.onMessageDeleted = _handleIncomingMessageDeleted;
     client.onCallSignaling = _handleIncomingCallSignaling;
+    client.onDevicePairRequest = _handleDevicePairRequest;
+    client.onBackupReceived = _handleBackupReceived;
+    client.onMessagePinned = _handleMessagePinned;
+    client.onMessageUnpinned = _handleMessageUnpinned;
 
     // Hook Audio Player listeners
     _audioPlayer.onPlayerStateChanged.listen((state) {
@@ -397,6 +407,9 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     if (peer != null) {
+      // Pre-warm duplex socket connection in background for zero-latency messaging
+      unawaited(client.getOrConnect(peer).catchError((_) => null));
+
       // Mark all unread incoming messages as read & send read receipts
       final unread = database
           .getMessagesForChat(peer.id)
