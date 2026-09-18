@@ -17,6 +17,7 @@ import 'chat_details_sheet.dart';
 import 'safety_number_dialog.dart';
 import 'sticker_picker_sheet.dart';
 import 'bluetooth_discovery_sheet.dart';
+import 'ios_pressable.dart';
 
 class ActiveChatView extends StatefulWidget {
   final Peer? peer;
@@ -142,12 +143,16 @@ class _ActiveChatViewState extends State<ActiveChatView> {
           ),
         ),
         leading: widget.onBack != null
-            ? IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
-                onPressed: () {
-                  HapticFeedback.lightImpact();
-                  widget.onBack!();
-                },
+            ? Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Center(
+                  child: IosIconButton(
+                    size: 34,
+                    icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 17),
+                    iconColor: TelegramTheme.primaryBlue,
+                    onPressed: widget.onBack,
+                  ),
+                ),
               )
             : null,
         titleSpacing: widget.onBack != null ? 0 : 16,
@@ -214,33 +219,59 @@ class _ActiveChatViewState extends State<ActiveChatView> {
         ),
         actions: [
           if (!isGroup)
-            IconButton(
-              tooltip: 'Voice Call',
-              icon: const Icon(CupertinoIcons.phone_fill, size: 20),
-              onPressed: () => provider.startCall(peer!),
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: IosIconButton(
+                size: 34,
+                tooltip: 'Voice Call',
+                icon: const Icon(CupertinoIcons.phone_fill, size: 17),
+                iconColor: TelegramTheme.primaryBlue,
+                onPressed: () => provider.startCall(peer!),
+              ),
             ),
-          IconButton(
-            tooltip: 'Search in Chat',
-            icon: Icon(
-              _isSearchingInChat
-                  ? Icons.search_off_rounded
-                  : Icons.search_rounded,
-              size: 22,
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: IosIconButton(
+              size: 34,
+              tooltip: 'Search in Chat',
+              icon: Icon(
+                _isSearchingInChat
+                    ? Icons.search_off_rounded
+                    : Icons.search_rounded,
+                size: 18,
+              ),
+              iconColor: _isSearchingInChat ? Colors.orange : TelegramTheme.primaryBlue,
+              onPressed: () {
+                setState(() {
+                  _isSearchingInChat = !_isSearchingInChat;
+                  if (!_isSearchingInChat) {
+                    _inChatSearchController.clear();
+                    _matchedIndices = [];
+                    _searchMatchIndex = 0;
+                  }
+                });
+              },
             ),
-            onPressed: () {
-              setState(() {
-                _isSearchingInChat = !_isSearchingInChat;
-                if (!_isSearchingInChat) {
-                  _inChatSearchController.clear();
-                  _matchedIndices = [];
-                  _searchMatchIndex = 0;
-                }
-              });
-            },
           ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert_rounded, size: 21),
-            tooltip: 'Chat Options',
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: PopupMenuButton<String>(
+              icon: Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0x33FFFFFF) : const Color(0x14000000),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: isDark ? Colors.white.withValues(alpha: 0.16) : Colors.white.withValues(alpha: 0.65),
+                    width: 0.75,
+                  ),
+                ),
+                child: const Center(
+                  child: Icon(Icons.more_vert_rounded, size: 18),
+                ),
+              ),
+              tooltip: 'Chat Options',
             onSelected: (val) {
               switch (val) {
                 case 'details':
@@ -324,8 +355,9 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 ),
             ],
           ),
-        ],
-      ),
+        ),
+      ],
+    ),
       body: DropTarget(
         onDragDone: (detail) {
           for (final f in detail.files) {
@@ -504,15 +536,19 @@ class _ActiveChatViewState extends State<ActiveChatView> {
               Positioned(
                 bottom: 84,
                 right: 16,
-                child: FloatingActionButton.small(
-                  elevation: 4,
-                  backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
-                  foregroundColor: TelegramTheme.primaryBlue,
-                  onPressed: () {
-                    HapticFeedback.lightImpact();
-                    _scrollToBottom();
-                  },
-                  child: const Icon(CupertinoIcons.chevron_down, size: 18),
+                child: IosIconButton(
+                  size: 38,
+                  icon: const Icon(CupertinoIcons.chevron_down, size: 19),
+                  iconColor: TelegramTheme.primaryBlue,
+                  backgroundColor: isDark ? const Color(0xE61E293B) : Colors.white.withValues(alpha: 0.9),
+                  shadows: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.12),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                  onPressed: _scrollToBottom,
                 ),
               ),
             // Drag-and-drop Overlay
@@ -796,51 +832,41 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 // Single Cupertino '+' Attachment Button
                 Padding(
                   padding: const EdgeInsets.only(bottom: 2, right: 6),
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withValues(alpha: 0.12)
-                          : Colors.black.withValues(alpha: 0.06),
-                      shape: BoxShape.circle,
-                    ),
-                    child: IconButton(
-                      padding: EdgeInsets.zero,
-                      icon: const Icon(CupertinoIcons.add, size: 22),
-                      color: TelegramTheme.primaryBlue,
-                      tooltip: 'Attachments & Tools',
-                      onPressed: isReadOnly
-                          ? null
-                          : () async {
-                              final action = await AttachmentActionSheet.show(
-                                context,
-                                isGroup: isGroup,
-                                currentEphemeralSeconds: provider.activeChatEphemeralSeconds,
-                              );
-                              if (action == null || !context.mounted) return;
-                              switch (action) {
-                                case AttachmentAction.photo:
-                                  provider.takeAndSendPhoto();
-                                  break;
-                                case AttachmentAction.file:
-                                  provider.pickAndSendFile();
-                                  break;
-                                case AttachmentAction.location:
-                                  _openLocationDialog(context, provider);
-                                  break;
-                                case AttachmentAction.stickers:
-                                  _openStickerPicker(context, provider);
-                                  break;
-                                case AttachmentAction.timer:
-                                  _openTimerPicker(context, provider);
-                                  break;
-                                case AttachmentAction.walkieTalkie:
-                                  BluetoothDiscoverySheet.show(context);
-                                  break;
-                              }
-                            },
-                    ),
+                  child: IosIconButton(
+                    size: 36,
+                    icon: const Icon(CupertinoIcons.add, size: 21),
+                    iconColor: isReadOnly ? IosTheme.systemGray : TelegramTheme.primaryBlue,
+                    tooltip: 'Attachments & Tools',
+                    onPressed: isReadOnly
+                        ? null
+                        : () async {
+                            final action = await AttachmentActionSheet.show(
+                              context,
+                              isGroup: isGroup,
+                              currentEphemeralSeconds: provider.activeChatEphemeralSeconds,
+                            );
+                            if (action == null || !context.mounted) return;
+                            switch (action) {
+                              case AttachmentAction.photo:
+                                provider.takeAndSendPhoto();
+                                break;
+                              case AttachmentAction.file:
+                                provider.pickAndSendFile();
+                                break;
+                              case AttachmentAction.location:
+                                _openLocationDialog(context, provider);
+                                break;
+                              case AttachmentAction.stickers:
+                                _openStickerPicker(context, provider);
+                                break;
+                              case AttachmentAction.timer:
+                                _openTimerPicker(context, provider);
+                                break;
+                              case AttachmentAction.walkieTalkie:
+                                BluetoothDiscoverySheet.show(context);
+                                break;
+                            }
+                          },
                   ),
                 ),
                 // Wide Text Input Field
@@ -917,47 +943,72 @@ class _ActiveChatViewState extends State<ActiveChatView> {
                 const SizedBox(width: 8),
                 Padding(
                   padding: const EdgeInsets.only(bottom: 2),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: isReadOnly
-                          ? IosTheme.systemGray3
-                          : (_isComposing || isGroup
-                              ? TelegramTheme.primaryBlue
-                              : (isDark ? IosTheme.systemGray5Dark : IosTheme.systemGray5Light)),
-                      shape: BoxShape.circle,
-                    ),
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 180),
-                      transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
-                      child: _isComposing || isGroup
-                          ? IconButton(
-                              key: const ValueKey('send_btn'),
-                              padding: EdgeInsets.zero,
-                              icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 20),
-                              tooltip: 'Send Message',
-                              onPressed: _isComposing && !isReadOnly
-                                  ? () => _handleSubmitted(provider)
-                                  : null,
+                  child: IosPressable(
+                    onPressed: isReadOnly
+                        ? null
+                        : (_isComposing || isGroup
+                            ? () => _handleSubmitted(provider)
+                            : () {
+                                HapticFeedback.mediumImpact();
+                                provider.startVoiceRecording();
+                              }),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        gradient: (_isComposing || isGroup) && !isReadOnly
+                            ? const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [Color(0xFF007AFF), Color(0xFF5856D6)],
+                              )
+                            : null,
+                        color: isReadOnly
+                            ? IosTheme.systemGray3
+                            : (!(_isComposing || isGroup)
+                                ? (isDark ? IosTheme.systemGray5Dark : IosTheme.systemGray5Light)
+                                : null),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isDark
+                              ? Colors.white.withValues(alpha: 0.18)
+                              : Colors.white.withValues(alpha: 0.65),
+                          width: 0.75,
+                        ),
+                        boxShadow: [
+                          if ((_isComposing || isGroup) && !isReadOnly)
+                            BoxShadow(
+                              color: const Color(0xFF007AFF).withValues(alpha: 0.4),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
                             )
-                          : IconButton(
-                              key: const ValueKey('mic_btn'),
-                              padding: EdgeInsets.zero,
-                              icon: Icon(
+                          else
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
+                              blurRadius: 4,
+                              offset: const Offset(0, 1),
+                            ),
+                        ],
+                      ),
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
+                        child: _isComposing || isGroup
+                            ? const Icon(
+                                Icons.arrow_upward_rounded,
+                                key: ValueKey('send_btn'),
+                                color: Colors.white,
+                                size: 20,
+                              )
+                            : Icon(
                                 Icons.mic_rounded,
+                                key: const ValueKey('mic_btn'),
                                 color: isDark ? Colors.white70 : Colors.black54,
                                 size: 20,
                               ),
-                              tooltip: 'Record Voice Note',
-                              onPressed: !isReadOnly
-                                  ? () {
-                                      HapticFeedback.mediumImpact();
-                                      provider.startVoiceRecording();
-                                    }
-                                  : null,
-                            ),
+                      ),
                     ),
                   ),
                 ),

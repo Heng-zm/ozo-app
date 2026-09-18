@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'ios_pressable.dart';
 
 enum AttachmentAction {
   photo,
@@ -153,18 +154,17 @@ class AttachmentActionSheet extends StatelessWidget {
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return InkWell(
-      onTap: () {
+    return IosPressable(
+      onPressed: () {
         HapticFeedback.selectionClick();
         onActionSelected(action);
       },
-      borderRadius: BorderRadius.circular(16),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
-            width: 54,
-            height: 54,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: gradient,
@@ -172,10 +172,14 @@ class AttachmentActionSheet extends StatelessWidget {
                 end: Alignment.bottomRight,
               ),
               shape: BoxShape.circle,
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.35),
+                width: 0.8,
+              ),
               boxShadow: [
                 BoxShadow(
-                  color: gradient.first.withValues(alpha: 0.35),
-                  blurRadius: 10,
+                  color: gradient.first.withValues(alpha: 0.38),
+                  blurRadius: 12,
                   offset: const Offset(0, 4),
                 ),
               ],

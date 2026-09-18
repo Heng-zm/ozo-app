@@ -9,6 +9,7 @@ import '../../providers/chat_provider.dart';
 import '../theme/app_theme.dart';
 import 'safety_number_dialog.dart';
 import 'bluetooth_discovery_sheet.dart';
+import 'ios_pressable.dart';
 
 class ChatDetailsSheet extends StatelessWidget {
   final Peer? peer;
@@ -356,23 +357,30 @@ class ChatDetailsSheet extends StatelessWidget {
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    return InkWell(
-      onTap: () {
-        HapticFeedback.selectionClick();
-        onTap();
-      },
-      borderRadius: BorderRadius.circular(14),
+    return IosPressable(
+      onPressed: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 46,
-              height: 46,
+              width: 48,
+              height: 48,
               decoration: BoxDecoration(
                 color: color.withValues(alpha: isDark ? 0.22 : 0.12),
                 shape: BoxShape.circle,
+                border: Border.all(
+                  color: color.withValues(alpha: isDark ? 0.35 : 0.25),
+                  width: 0.75,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: color.withValues(alpha: isDark ? 0.25 : 0.12),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
               ),
               child: Icon(icon, color: color, size: 22),
             ),

@@ -23,6 +23,7 @@ import '../widgets/bluetooth_discovery_sheet.dart';
 import '../widgets/in_app_notification_banner.dart';
 import '../widgets/security_settings_dialog.dart';
 import '../widgets/transfer_queue_sheet.dart';
+import '../widgets/ios_pressable.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -731,9 +732,12 @@ class _HomeScreenState extends State<HomeScreen> {
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 16),
-            OutlinedButton.icon(
+            IosPillButton(
+              height: 38,
+              isPrimary: false,
               icon: const Icon(Icons.network_check_rounded, size: 16),
-              label: const Text('Network Diagnostics', style: TextStyle(fontSize: 12)),
+              label: 'Network Diagnostics',
+              fontSize: 13,
               onPressed: () => _showDiagnosticsDialog(context, provider),
             ),
           ],
@@ -841,12 +845,26 @@ class _HomeScreenState extends State<HomeScreen> {
                 // Compose '+' popup menu
                 PopupMenuButton<String>(
                   icon: Container(
-                    padding: const EdgeInsets.all(6),
+                    width: 34,
+                    height: 34,
                     decoration: BoxDecoration(
                       color: TelegramTheme.primaryBlue.withValues(alpha: 0.12),
                       shape: BoxShape.circle,
+                      border: Border.all(
+                        color: TelegramTheme.primaryBlue.withValues(alpha: 0.3),
+                        width: 0.75,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: TelegramTheme.primaryBlue.withValues(alpha: 0.15),
+                          blurRadius: 6,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
                     ),
-                    child: const Icon(Icons.add_rounded, size: 20, color: TelegramTheme.primaryBlue),
+                    child: const Center(
+                      child: Icon(Icons.add_rounded, size: 20, color: TelegramTheme.primaryBlue),
+                    ),
                   ),
                   tooltip: 'New Chat / Connect',
                   onSelected: (val) {
@@ -929,7 +947,30 @@ class _HomeScreenState extends State<HomeScreen> {
                   icon: Badge(
                     isLabelVisible: activeTransfersCount > 0,
                     label: Text('$activeTransfersCount'),
-                    child: const Icon(Icons.more_vert_rounded, size: 20),
+                    child: Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0x33FFFFFF) : const Color(0x14000000),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isDark
+                              ? Colors.white.withValues(alpha: 0.16)
+                              : Colors.white.withValues(alpha: 0.65),
+                          width: 0.75,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.04),
+                            blurRadius: 6,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                      child: const Center(
+                        child: Icon(Icons.more_vert_rounded, size: 18),
+                      ),
+                    ),
                   ),
                   tooltip: 'Hub & Settings',
                   onSelected: (val) {
